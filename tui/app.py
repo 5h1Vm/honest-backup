@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import re
 import json
 import shutil
 import subprocess
@@ -1180,6 +1181,9 @@ class BackupContentsScreen(NavScreen):
 # ======================================================================
 # Browse backed-up data (with JSON viewer)
 # ======================================================================
+DAY_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def browse_roots() -> list[tuple[str, Path]]:
     """Places where readable (decrypted) backup data lives."""
     cfg = read_kv_file(CONF_PATH)
@@ -1193,7 +1197,9 @@ def browse_roots() -> list[tuple[str, Path]]:
     workspace = PROJECT_ROOT / cfg.get("WORKSPACE", "workspace")
     if workspace.exists():
         for day in sorted(workspace.iterdir(), reverse=True):
-            if day.is_dir():
+            # Only dated folders. "archive" is the staging area holding the
+            # encrypted tarballs, which are not readable and not data.
+            if day.is_dir() and DAY_DIR_RE.match(day.name):
                 roots.append((f"Collected data — {day.name}", day))
     return roots
 

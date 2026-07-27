@@ -46,9 +46,10 @@ def fetch_backup_artifact(backup_id: str, download_dir: Path) -> Optional[Backup
     Returns:
         BackupArtifact object if successful, None otherwise.
     """
+    # Not gated on REPOSITORY_ENABLED: every run writes its archive to the
+    # local vault whatever that flag says, so gating the read made restore
+    # fail with "Failed to download" while the archive sat right there.
     repo = Repository()
-    if not repo.enabled():
-        return None
 
     # Ensure download directory exists
     download_dir.mkdir(parents=True, exist_ok=True)
