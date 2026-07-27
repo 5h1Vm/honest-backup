@@ -111,7 +111,19 @@ def load(repository_root: Path) -> dict:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return {"version": LEDGER_VERSION, "created": _now(), "backups": {}}
-    data.setdefault("backups", {})
+
+    # Valid JSON of the wrong shape is the awkward case: it survives parsing
+    # and then fails much later, where the error says nothing useful. A
+    # ledger we cannot trust is treated as no ledger.
+    if not isinstance(data, dict):
+        return {"version": LEDGER_VERSION, "created": _now(), "backups": {}}
+    if not isinstance(data.get("backups"), dict):
+        data["backups"] = {}
+    data["backups"] = {
+        str(key): value
+        for key, value in data["backups"].items()
+        if isinstance(value, dict)
+    }
     data.setdefault("version", LEDGER_VERSION)
     return data
 

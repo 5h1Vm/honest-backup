@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -81,6 +82,17 @@ def settings(conf: dict) -> dict:
     remote = conf.get("REMOTE", "").rstrip("/")
     destination = conf.get("DESTINATION", "")
 
+    # Check the numeric settings here rather than letting rclone reject them
+    # halfway through. Its message ("bad suffix 'd'") means nothing to
+    # somebody who just mistyped a speed limit.
+    transfers = conf.get("TRANSFERS", "4").strip() or "4"
+    if not transfers.isdigit() or not 1 <= int(transfers) <= 64:
+        die(f"TRANSFERS must be a number between 1 and 64, not '{transfers}'")
+
+    bandwidth = conf.get("BANDWIDTH_LIMIT", "").strip()
+    if bandwidth and not re.fullmatch(r"\d+(\.\d+)?[KMGkmg]?", bandwidth):
+        die(f"BANDWIDTH_LIMIT must look like 10M or 500K, not '{bandwidth}'")
+
     return {
         "remote": remote,
         "destination": Path(os.path.expanduser(destination)) if destination else None,
@@ -90,8 +102,8 @@ def settings(conf: dict) -> dict:
             f"{remote}/status" if remote else ""
         ),
         "site": conf.get("SITE", "") or platform.node() or "office",
-        "bandwidth": conf.get("BANDWIDTH_LIMIT", "").strip(),
-        "transfers": conf.get("TRANSFERS", "4").strip(),
+        "bandwidth": bandwidth,
+        "transfers": transfers,
     }
 
 

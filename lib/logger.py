@@ -1,18 +1,61 @@
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
+from zoneinfo import ZoneInfo
 
-IST_OFFSET = timedelta(hours=5, minutes=30)
 
-def _now_ist():
-    return datetime.utcnow() + IST_OFFSET
+def _display_zone():
+    """The zone log timestamps are written in.
+
+    Follows CRON_TIMEZONE so the times in the log line up with the times on
+    the Scheduling screen. This used to be a hardcoded +5:30 offset, which
+    silently disagreed with the machine clock and with any other time zone.
+    """
+    try:
+        from orchestrator.config import CFG
+        name = str(CFG.get("CRON_TIMEZONE", "")).strip()
+        if name:
+            return ZoneInfo(name)
+    except Exception:
+        pass
+    try:
+        return ZoneInfo(Path("/etc/timezone").read_text().strip())
+    except Exception:
+        return None
+
+
+def _now():
+    zone = _display_zone()
+    return datetime.now(zone) if zone else datetime.now()
 
 
 class Logger:
+    """Writes the run log.
+
+    LOG_LEVEL in backup.conf decides how much gets through:
+
+        QUIET    warnings and errors only
+        NORMAL   the default: progress, results, warnings, errors
+        VERBOSE  everything, including per-item debug detail
+
+    It used to be a setting the interface offered and nothing read.
+    """
 
     INDENT = "    "
 
-    def __init__(self, log_dir: Path, log_filename: str = "backup.log"):
+    LEVELS = {"QUIET": 0, "NORMAL": 1, "VERBOSE": 2}
+
+    # The lowest verbosity at which each kind of line is printed.
+    THRESHOLD = {
+        "DEBUG": 2,
+        "INFO": 1,
+        "SUCCESS": 1,
+        "WARNING": 0,
+        "ERROR": 0,
+    }
+
+    def __init__(self, log_dir: Path, log_filename: str = "backup.log",
+                 level: str | None = None):
 
         self.log_dir = Path(log_dir)
 
@@ -25,11 +68,12 @@ class Logger:
 
         self._indent = 0
         self._section_start = None
+        self.level = self._resolve_level(level)
 
         self._write_raw("")
         self._write_raw("=" * 60)
         self._write_raw("Backup Started")
-        self._write_raw(_now_ist().strftime("%Y-%m-%d %H:%M:%S"))
+        self._write_raw(_now().strftime("%Y-%m-%d %H:%M:%S"))
         self._write_raw("=" * 60)
         self._write_raw("")
 
@@ -45,9 +89,27 @@ class Logger:
 
             f.write(text + "\n")
 
+    @classmethod
+    def _resolve_level(cls, level=None):
+        if level is None:
+            try:
+                from orchestrator.config import CFG
+                level = CFG.get("LOG_LEVEL", "NORMAL")
+            except Exception:
+                level = "NORMAL"
+        name = str(level).strip().upper()
+        # Tolerate the level names people reach for out of habit.
+        name = {"INFO": "NORMAL", "DEFAULT": "NORMAL", "WARN": "QUIET",
+                "WARNING": "QUIET", "ERROR": "QUIET", "DEBUG": "VERBOSE",
+                "TRACE": "VERBOSE", "ALL": "VERBOSE"}.get(name, name)
+        return cls.LEVELS.get(name, 1)
+
     def _write(self, level, message):
 
-        timestamp = _now_ist().strftime(
+        if self.THRESHOLD.get(level, 1) > self.level:
+            return
+
+        timestamp = _now().strftime(
             "%Y-%m-%d %H:%M:%S"
         )
 
@@ -106,7 +168,7 @@ class Logger:
         self._write_raw("")
         self._write_raw("=" * 60)
         self._write_raw("Backup Finished")
-        self._write_raw(_now_ist().strftime("%Y-%m-%d %H:%M:%S"))
+        self._write_raw(_now().strftime("%Y-%m-%d %H:%M:%S"))
         self._write_raw("=" * 60)
 
     def info(self, message):

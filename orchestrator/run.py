@@ -1,5 +1,6 @@
 from datetime import datetime
 import argparse
+import sys
 import os
 import shutil
 import subprocess
@@ -274,7 +275,7 @@ def main():
         elif args.backup_id:
             if not args.private_key:
                 print("Error: --private-key is required for restore operations")
-                return
+                sys.exit(2)
             restore_backup_command(
                 backup_id=args.backup_id,
                 restore_dir=args.restore_dir,
@@ -284,7 +285,7 @@ def main():
             return
         else:
             print("Error: Either --list or --backup-id must be specified with --restore")
-            return
+            sys.exit(2)
 
     # Normal backup mode
     force = args.force

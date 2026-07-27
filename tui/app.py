@@ -141,8 +141,24 @@ def read_kv_file(path: Path) -> dict[str, str]:
     return data
 
 
+def clean_conf_value(value: str) -> str:
+    """Make a value safe to write as one KEY=VALUE line.
+
+    A newline in a value used to end the line and start a new one, so a
+    pasted "a@b.com\\nBACKBLAZE_ENABLED=false" quietly turned the cloud copy
+    off. run_backup.sh also exports every line into the shell environment,
+    which made that worse than a config mixup. Everything is collapsed onto
+    one line here.
+    """
+    text = str(value)
+    for character in ("\r\n", "\r", "\n", "\x00"):
+        text = text.replace(character, " ")
+    return text.strip()
+
+
 def save_conf_values(path: Path, updates: dict[str, str]) -> None:
     """Update KEY=VALUE lines in place, preserving comments and layout."""
+    updates = {key: clean_conf_value(value) for key, value in updates.items()}
     remaining = dict(updates)
     out: list[str] = []
     if path.exists():
@@ -215,15 +231,28 @@ def archive_path(backup_id: str) -> Path:
 
 
 def list_local_backups() -> list[tuple[str, str, str]]:
-    """(backup_id, friendly timestamp, size) — newest first."""
-    archives = vault_dir() / "archives"
+    """(backup_id, friendly timestamp, size) — newest first.
+
+    Every filesystem call here is guarded. The backup folder is a setting, and
+    a setting can point somewhere unreadable — pathlib raises PermissionError
+    from .exists() rather than returning False, which used to crash the home
+    screen on launch and left no way back in to correct the setting.
+    """
     rows: list[tuple[str, str, str]] = []
-    if archives.exists():
-        for file in sorted(archives.glob("*.tar.zst.age"), reverse=True):
-            backup_id = file.name.replace(".tar.zst.age", "")
-            moment = backup_id_to_datetime(backup_id)
-            stamp = moment.strftime("%d %b %Y · %H:%M") if moment else backup_id
-            rows.append((backup_id, stamp, human_size(file.stat().st_size)))
+    try:
+        archives = vault_dir() / "archives"
+        files = sorted(archives.glob("*.tar.zst.age"), reverse=True)
+    except OSError:
+        return rows
+    for file in files:
+        backup_id = file.name.replace(".tar.zst.age", "")
+        moment = backup_id_to_datetime(backup_id)
+        stamp = moment.strftime("%d %b %Y · %H:%M") if moment else backup_id
+        try:
+            size = human_size(file.stat().st_size)
+        except OSError:
+            size = "unknown"
+        rows.append((backup_id, stamp, size))
     return rows
 
 
@@ -2305,8 +2334,37 @@ ones right next to the new ones.[/]
 # Settings
 # ======================================================================
 class SettingField:
-    def __init__(self, key: str, label: str, kind: str = "input") -> None:
+    """One editable setting.
+
+    `kind` is "input", "switch", "number" or "choice". Anything other than a
+    plain input gets checked before saving: a port of "/root/nope" or a log
+    level of "LOUD" used to be accepted silently and only cause trouble much
+    later, somewhere unrelated.
+    """
+
+    def __init__(self, key: str, label: str, kind: str = "input",
+                 choices: tuple[str, ...] = (), minimum: int | None = None,
+                 maximum: int | None = None) -> None:
         self.key, self.label, self.kind = key, label, kind
+        self.choices, self.minimum, self.maximum = choices, minimum, maximum
+
+    def problem(self, value: str) -> str | None:
+        """What is wrong with this value, in words, or None if it is fine."""
+        value = value.strip()
+        if not value:
+            return None
+        if self.kind == "number":
+            if not value.lstrip("-").isdigit():
+                return f"{self.label}: '{value}' is not a whole number"
+            number = int(value)
+            if self.minimum is not None and number < self.minimum:
+                return f"{self.label}: must be {self.minimum} or more"
+            if self.maximum is not None and number > self.maximum:
+                return f"{self.label}: must be {self.maximum} or less"
+        if self.kind == "choice" and value.upper() not in self.choices:
+            return (f"{self.label}: pick one of "
+                    f"{', '.join(self.choices)}")
+        return None
 
 
 SETTING_SECTIONS: list[tuple[str, list[SettingField]]] = [
@@ -2325,7 +2383,8 @@ SETTING_SECTIONS: list[tuple[str, list[SettingField]]] = [
         SettingField("TELEGRAM_CHAT_ID", "Telegram chat ID"),
         SettingField("EMAIL_ENABLED", "Email alerts", "switch"),
         SettingField("EMAIL_SMTP_HOST", "Email server"),
-        SettingField("EMAIL_SMTP_PORT", "Email server port"),
+        SettingField("EMAIL_SMTP_PORT", "Email server port", "number",
+                     minimum=1, maximum=65535),
         SettingField("EMAIL_FROM", "Send alerts from"),
         SettingField("EMAIL_TO", "Send alerts to"),
         SettingField("SLACK_ENABLED", "Slack messages", "switch"),
@@ -2336,10 +2395,13 @@ SETTING_SECTIONS: list[tuple[str, list[SettingField]]] = [
         SettingField("INCREMENTAL", "Space-saving backups (incremental)", "switch"),
         SettingField("WORKSPACE", "Working folder"),
         SettingField("RESTORE_DIR", "Default restore folder"),
-        SettingField("LOG_LEVEL", "Log detail level"),
-        SettingField("AUDIT_RETENTION_DAYS", "Keep audit records for (days)"),
+        SettingField("LOG_LEVEL", "Log detail level", "choice",
+                     choices=("QUIET", "NORMAL", "VERBOSE")),
+        SettingField("AUDIT_RETENTION_DAYS", "Keep audit records for (days)",
+                     "number", minimum=0),
         SettingField("NOTION_WORKSPACE_URL", "Notion workspace address"),
-        SettingField("NOTION_EXPORT_TIMEOUT_MINUTES", "Notion export time limit (min)"),
+        SettingField("NOTION_EXPORT_TIMEOUT_MINUTES", "Notion export time limit (min)",
+                     "number", minimum=1),
     ]),
 ]
 
@@ -2407,6 +2469,11 @@ class SettingsScreen(NavScreen):
                 updates[field.key] = "true" if widget.value else "false"
             elif isinstance(widget, Input):
                 value = widget.value.strip()
+                problem = field.problem(value)
+                if problem:
+                    self.notify(problem, title="Settings", severity="error")
+                    widget.focus()
+                    return
                 if value:
                     updates[field.key] = value
         try:

@@ -24,9 +24,12 @@ def list_backups() -> List[str]:
     Returns:
         List of backup IDs (strings) sorted from newest to oldest.
     """
+    # Deliberately not gated on REPOSITORY_ENABLED. Every run writes its
+    # archive to the local vault before syncing anywhere, whatever that flag
+    # says, so gating the *listing* on it made "--restore --list" report no
+    # backups while the archives sat right there and the interface listed
+    # them. Restore should show whatever actually exists.
     repo = Repository()
-    if not repo.enabled():
-        return []
     backups = repo.list_backups()
     # Sort by name (which is timestamp) descending
     return sorted(backups, reverse=True)
