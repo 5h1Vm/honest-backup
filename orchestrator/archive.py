@@ -39,8 +39,6 @@ def build_archive(
 
 ):
 
-    print(f"DEBUG: build_manifest received manifest: {manifest}", flush=True)
-    print(f"DEBUG: build_manifest type of manifest: {type(manifest)}", flush=True)
 
     workspace = WORKSPACE / day
 
@@ -120,5 +118,4 @@ def build_archive(
 
     )
 
-    print(f"DEBUG: Created artifact with manifest={artifact.manifest}", flush=True)
     return artifact

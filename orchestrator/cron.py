@@ -1,57 +1,22 @@
-"""
-Automatic runs: installing, editing and removing the cron entry.
+"""Installing and editing the cron entries that run backups unattended.
 
-HonestBackup runs unattended by having cron call run_backup.sh at set
-times. Rather than making anyone edit a crontab by hand, the schedule
-lives in backup.conf and is applied from here (and from the TUI's
-Scheduling screen):
+The schedule lives in backup.conf, not in the crontab:
 
     CRON_ENABLED=true
     CRON_TIMEZONE=Asia/Kolkata
     M365_TIMES=01:00,13:00
 
-Only the block between our marker lines is ever touched, so any other
-cron entries are preserved exactly.
+Times are per service and get merged: every distinct moment becomes one
+cron line naming the services due then, so services sharing a time share a
+single run.
 
-Time zones
-----------
-Cron has no notion of the time zone you think in. It fires in whatever
-zone the machine is set to, and this server runs on UTC. Ubuntu's cron
-is built without CRON_TZ support, so writing "CRON_TZ=Asia/Kolkata" into
-the crontab would be silently ignored and the backup would run five and
-a half hours away from where it was wanted.
+Ubuntu's cron is built without CRON_TZ support, so writing one in would be
+silently ignored. The conversion to the machine's own zone happens here
+instead, and each line carries a comment with the time it came from. Zones
+that observe DST drift by an hour until the schedule is saved again;
+observes_dst() reports that so the TUI can warn.
 
-So the conversion is done here instead: CRON_TIMES is written in the
-zone people actually use, and the cron expression is generated in the
-machine's own zone. 01:00 IST becomes 19:30 UTC the previous day. The
-crontab carries a comment recording the original intent, so the
-translation is never a mystery to whoever reads it next.
-
-For a zone that observes daylight saving the generated expression is
-fixed to the offset in force when it was saved, and drifts by an hour
-when the clocks change; `observes_dst` reports that so the TUI can say
-so. India does not observe DST, so for Asia/Kolkata the conversion is
-exact and permanent.
-
-Each service keeps its own times
--------------------------------
-Microsoft 365 might be worth backing up six times a day, Cloudflare three,
-Notion once. So the times are per service:
-
-    M365_TIMES=01:00,05:00,09:00,13:00,17:00,21:00
-    CLOUDFLARE_TIMES=01:00,09:00,17:00
-    NOTION_TIMES=01:00
-
-Those get merged into one crontab. Every distinct moment across all the
-lists becomes a single cron line that names the services due at that
-moment, so 01:00 runs all three in one pass while 05:00 runs only M365:
-
-    30 19 * * *  run_backup.sh --only cloudflare,m365,notion   # 01:00 IST
-    30 23 * * *  run_backup.sh --only m365                     # 05:00 IST
-
-One run per moment, never three overlapping ones. There is no second
-layer deciding whether enough time has passed — these times are the whole
-schedule.
+Only the block between the marker lines is touched.
 """
 
 from __future__ import annotations

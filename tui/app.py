@@ -142,13 +142,10 @@ def read_kv_file(path: Path) -> dict[str, str]:
 
 
 def clean_conf_value(value: str) -> str:
-    """Make a value safe to write as one KEY=VALUE line.
+    """Collapse a value onto one line so it cannot inject extra settings.
 
-    A newline in a value used to end the line and start a new one, so a
-    pasted "a@b.com\\nBACKBLAZE_ENABLED=false" quietly turned the cloud copy
-    off. run_backup.sh also exports every line into the shell environment,
-    which made that worse than a config mixup. Everything is collapsed onto
-    one line here.
+    run_backup.sh exports every conf line into the shell environment, so a
+    pasted newline is worse than a config mixup.
     """
     text = str(value)
     for character in ("\r\n", "\r", "\n", "\x00"):
@@ -233,10 +230,8 @@ def archive_path(backup_id: str) -> Path:
 def list_local_backups() -> list[tuple[str, str, str]]:
     """(backup_id, friendly timestamp, size) — newest first.
 
-    Every filesystem call here is guarded. The backup folder is a setting, and
-    a setting can point somewhere unreadable — pathlib raises PermissionError
-    from .exists() rather than returning False, which used to crash the home
-    screen on launch and left no way back in to correct the setting.
+    Guarded throughout: the folder is a setting, and pathlib raises
+    PermissionError rather than returning False for one it cannot read.
     """
     rows: list[tuple[str, str, str]] = []
     try:
@@ -309,7 +304,9 @@ def office_copy_status() -> str | None:
 
     if not newest.get("healthy", True):
         return f"[{RED}]{site}: needs attention[/]  [{MUTED}]· checked {seen}[/]"
-    return f"[{WHITE}]{site}: {held} backups[/]  [{MUTED}]· copied {seen}[/]"
+    plural = "" if held == 1 else "s"
+    return (f"[{WHITE}]{site}: {held} backup{plural}[/]  "
+            f"[{MUTED}]· copied {seen}[/]")
 
 
 def load_manifest(backup_id: str) -> dict | None:
@@ -440,10 +437,10 @@ def _times_for(cfg: dict, times_key: str) -> list[tuple[int, int]]:
 
 
 def time_row(service: str, index: int, value: str) -> Horizontal:
-    """One editable time, with a button to take it away again.
+    """One editable time, with a button to remove it.
 
-    The id carries a counter rather than the position, so removing a box in
-    the middle cannot make two survivors share an id.
+    The id carries a counter, not a position, so removing a middle box
+    cannot leave two survivors sharing an id.
     """
     stamp = f"{index}-{next(_TIME_ROW_SEQUENCE)}"
     return Horizontal(
@@ -525,10 +522,8 @@ class ArrowNavigation:
     def step_focus(self, forward: bool) -> None:
         """Focus the next control, skipping the containers that wrap them.
 
-        Deliberately not called _move_focus: Textual's Screen already has a
-        private method of that name with a different signature, and shadowing
-        it broke Tab — focus_next() calls self._move_focus(1, "*") and got a
-        TypeError.
+        Not named _move_focus: Textual's Screen has one of its own with a
+        different signature, and shadowing it breaks Tab.
         """
         chain = self._controls()
         if not chain:
@@ -679,6 +674,7 @@ MENU_ITEMS: list[tuple[str, str, str]] = [
     ("credentials", "API keys & passwords", "Add or change the credentials the backup uses"),
     ("keys", "Encryption keys", "View or replace the keys that lock your backups"),
     ("setup", "First-time setup", "A guided walk-through in six easy steps"),
+    ("help", "Help", "What each part does, and the keys that work anywhere"),
     ("quit", "Quit", "Close HonestBackup"),
 ]
 
@@ -698,7 +694,7 @@ class HomeScreen(NavScreen):
             yield Static("", id="home-clock")
         yield Static("", id="home-status")
         yield OptionList(id="home-menu")
-        yield hint_bar("↑ ↓ move · Enter opens · 1-9 jump straight there · ? help")
+        yield hint_bar("↑ ↓ move · Enter opens · 1-9 jump to an item · q quit · ? help")
 
     def on_mount(self) -> None:
         self._status_lines: list[str] = []
@@ -750,7 +746,8 @@ class HomeScreen(NavScreen):
             last_text = time_ago(last_dt) if last_dt else backups[0][1]
             last_line = (
                 f"[{MUTED}]Last backup[/]   [{WHITE}]{last_text}[/]  "
-                f"[{MUTED}]· {len(backups)} backups saved[/]"
+                f"[{MUTED}]· {len(backups)} backup"
+                f"{'s' if len(backups) != 1 else ''} saved[/]"
             )
         else:
             last_line = f"[{MUTED}]Last backup[/]   [{YELLOW}]none yet[/]"
@@ -767,9 +764,12 @@ class HomeScreen(NavScreen):
         if app.busy:
             items.insert(0, ("progress", "Show progress",
                              f"{app.job_name or 'A job'} is running — watch it live"))
-        for number, (item_id, title, description) in enumerate(items, start=1):
+        # Only the first nine get a number, because only 1-9 are shortcuts.
+        # Numbering the rest would promise a key that does nothing.
+        for index, (item_id, title, description) in enumerate(items):
+            lead = f"{index + 1}.  " if index < 9 else "    "
             prompt = Text.from_markup(
-                f"[b {WHITE}]{number}.  {title}[/]\n    [{MUTED}]{description}[/]"
+                f"[b {WHITE}]{lead}{title}[/]\n    [{MUTED}]{description}[/]"
             )
             menu.add_option(Option(prompt, id=item_id))
         menu.highlighted = highlighted if highlighted is not None else 0
@@ -780,11 +780,11 @@ class HomeScreen(NavScreen):
         self._open(event.option_id or "")
 
     def on_key(self, event) -> None:
-        # Number shortcuts: press 1-9 (0 = tenth) to open a menu item directly.
-        if event.key and event.key.isdigit():
+        # Number shortcuts: 1-9 open the first nine items directly.
+        if event.key and event.key in "123456789":
             menu = self.query_one("#home-menu", OptionList)
-            index = 9 if event.key == "0" else int(event.key) - 1
-            if 0 <= index < menu.option_count:
+            index = int(event.key) - 1
+            if index < menu.option_count:
                 option = menu.get_option_at_index(index)
                 self._open(option.id or "")
                 event.stop()
@@ -793,6 +793,8 @@ class HomeScreen(NavScreen):
         app: HonestbackupTUI = self.app  # type: ignore[assignment]
         if item_id == "backup":
             app.push_screen(BackupOptionsScreen(), app.backup_mode_chosen)
+        elif item_id == "help":
+            app.push_screen(HelpScreen())
         elif item_id == "backups":
             app.push_screen(BackupsScreen())
         elif item_id == "progress":
@@ -1157,7 +1159,7 @@ class BackupContentsScreen(NavScreen):
             return
         files = manifest.get("files", [])
         log.write(
-            f"[{WHITE}]{len(files)} files · "
+            f"[{WHITE}]{len(files)} file{'' if len(files) == 1 else 's'} · "
             f"{human_size(float(manifest.get('total_size', 0)))} in total[/]\n"
         )
         for entry in files:
@@ -2169,7 +2171,8 @@ class CredentialsScreen(NavScreen):
         missing = [n for n in REQUIRED_ENTRIES if n not in stored]
 
         intro.update(
-            f"\n[{WHITE}]{len(stored)} credentials stored. "
+            f"\n[{WHITE}]{len(stored)} credential"
+            f"{'' if len(stored) == 1 else 's'} stored. "
             + (
                 f"[{YELLOW}]{len(missing)} expected entries are missing.[/]"
                 if missing else f"[{GREEN}]All expected entries present.[/]"
@@ -2346,12 +2349,10 @@ ones right next to the new ones.[/]
 # Settings
 # ======================================================================
 class SettingField:
-    """One editable setting.
+    """One editable setting: "input", "switch", "number" or "choice".
 
-    `kind` is "input", "switch", "number" or "choice". Anything other than a
-    plain input gets checked before saving: a port of "/root/nope" or a log
-    level of "LOUD" used to be accepted silently and only cause trouble much
-    later, somewhere unrelated.
+    Anything but a plain input is checked before saving, so a bad value
+    fails here rather than somewhere unrelated much later.
     """
 
     def __init__(self, key: str, label: str, kind: str = "input",
@@ -2936,35 +2937,52 @@ class HelpScreen(NavModal):
             yield Static("[b]HELP[/b]", classes="dialog-title")
             yield Static(
                 f"""
-[b {CYAN}]Getting around — arrow keys and Enter do everything[/]
+[b {CYAN}]Getting around[/]
 
   [{CYAN}]↑ ↓[/]      Move through a list, or between fields and buttons
   [{CYAN}]← →[/]      Move between buttons and fields
-  [{CYAN}]Enter[/]    Open the selected item, or press the selected button
+  [{CYAN}]Enter[/]    Open what is selected, or press the selected button
   [{CYAN}]Space[/]    Flip a switch on or off
-  [{CYAN}]1 – 9[/]    Jump straight to a menu item
+  [{CYAN}]1 – 9[/]    Jump straight to one of the first nine menu items
   [{CYAN}]Tab[/]      Move forward (same as ↓)
-  [{CYAN}]Esc[/]      Go back to the previous screen
-  [{CYAN}]Ctrl+Q[/]   Quit HonestBackup
+  [{CYAN}]Esc[/]      Back to the previous screen
+  [{CYAN}]q[/]        Quit
 
-[{MUTED}]Whatever is selected is highlighted. In a list, ↑ ↓ moves through the
-list; press → or Tab to step out to the buttons underneath.[/]
+[{MUTED}]In a list, ↑ ↓ moves through the list — press → or Tab to step out
+to the buttons underneath.[/]
 
 [b {CYAN}]The menu[/]
 
-  [{WHITE}]Back up now[/]       Makes a backup right away
-  [{WHITE}]My backups[/]        Every saved backup — check it, look inside
-  [{WHITE}]Restore files[/]     Copies files back out of a backup
-  [{WHITE}]Logs & reports[/]    The full record of every past run
-  [{WHITE}]Read backed-up data[/] Browse restored files — JSON viewer built in
-  [{WHITE}]Scheduling[/]        What gets backed up, and how often
-  [{WHITE}]Settings[/]          Storage, notifications and options
+  [{WHITE}]Back up now[/]          Right away, or only what is due
+  [{WHITE}]My backups[/]           Every saved backup. Check one against its
+                        SHA-256, look inside it, or ask whether the
+                        cloud still holds everything it should
+  [{WHITE}]Restore files[/]        Bring files back out of a backup
+  [{WHITE}]Logs & reports[/]       What happened during past runs
+  [{WHITE}]Read backed-up data[/]  Browse collected or restored files
+  [{WHITE}]Scheduling[/]           What runs, at which times, and how long
+                        each copy is kept
+  [{WHITE}]Settings[/]             Storage, notifications, log detail
   [{WHITE}]API keys & passwords[/] Add or change stored credentials
-  [{WHITE}]Encryption keys[/]   View or replace the backup keys
-  [{WHITE}]First-time setup[/]  A guided walk-through
+  [{WHITE}]Encryption keys[/]      View or replace the keys that lock backups
+  [{WHITE}]First-time setup[/]     A guided walk-through
 
-[{MUTED}]While a backup or restore is running you can go back to the
-menu — it keeps running, and "Show progress" appears at the top.[/]
+[b {CYAN}]Worth knowing[/]
+
+  [{WHITE}]Backups are locked.[/]  The archives are encrypted. To read an old
+  one, restore it first — then it appears under Read backed-up data.
+
+  [{WHITE}]Times are yours.[/]  Each service has its own run times, written in
+  the time zone you set. Services sharing a time share one run.
+
+  [{WHITE}]Each copy is kept for its own length.[/]  On this computer, 0 means
+  delete once it is safely in the cloud. On the cloud or the drive, 0 means
+  never delete. Tidying happens at the end of each run.
+
+  [{WHITE}]The newest backup is never deleted[/], whatever the settings say.
+
+[{MUTED}]A backup keeps running if you leave its screen — "Show progress"
+appears at the top of the menu while it does.[/]
 """,
                 classes="dialog-body",
             )

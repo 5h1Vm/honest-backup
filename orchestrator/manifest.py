@@ -31,10 +31,8 @@ def build_manifest(date_dir, backup_id=None):
     else:
         outfile = date_dir / 'manifest.json'
 
-    print(f"DEBUG: build_manifest called with backup_id={backup_id}, outfile={outfile}", flush=True)
 
     with open(outfile, 'w') as f:
         json.dump(manifest, f, indent=4)
 
-    print(f"DEBUG: Manifest written to {outfile}", flush=True)
     return outfile

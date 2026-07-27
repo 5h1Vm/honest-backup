@@ -1,37 +1,14 @@
 """The record of what the cloud copy is supposed to contain.
 
-The problem this solves
------------------------
-Without this, "is Backblaze complete?" has no answer. You can list the
-bucket, but a listing only tells you what *is* there — it cannot tell you
-what *should* be there. If a backup silently failed to upload, or somebody
-deleted an archive, or a rotated key pointed at a fresh empty bucket, the
-listing looks entirely healthy. It is a list of files agreeing with itself.
+A bucket listing only says what IS there, never what SHOULD be, so a failed
+upload or a credential pointing at an empty bucket both look healthy. Every
+sync appends here instead: backup id, size, SHA-256, where it reached.
+Checking the cloud then means comparing it against this.
 
-So every successful sync appends to a ledger: the backup id, its size, its
-SHA-256, and when it was replicated where. The ledger is the *expectation*.
-Checking the cloud then means comparing the bucket against the ledger, and
-a missing archive becomes a concrete, named discrepancy instead of an
-absence nobody notices.
+Kept in three places — the server, the bucket, and the office drive.
 
-Where it lives
---------------
-Three copies, deliberately:
-
-  backupvault/ledger.json         next to the archives on this server
-  <bucket>/ledger.json            in the cloud, beside what it describes
-  <office drive>/ledger.json      pulled down with everything else
-
-The cloud copy is what makes credential changes safe. Point rclone at a new
-key or a new bucket and the first check will say either "this bucket holds
-the 412 archives the ledger expects" or "this bucket is empty and the
-ledger expects 412" — which is the difference between a successful
-migration and a silent catastrophe.
-
-The ledger is not a security control. It is signed by nothing, and anyone
-who can delete an archive can also edit it. It defends against accident and
-misconfiguration, which is what actually happens, not against an attacker
-who already owns the bucket. Object Lock is the answer to that.
+Not a security control: anyone who can delete an archive can edit this too.
+It catches accident and misconfiguration. Object Lock is the other problem.
 """
 
 from __future__ import annotations

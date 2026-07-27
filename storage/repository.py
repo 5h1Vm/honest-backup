@@ -36,7 +36,6 @@ class Repository(StorageProvider):
         artifact: BackupArtifact,
     ) -> bool:
 
-        print(f"DEBUG: Repository.upload called with artifact.manifest={artifact.manifest}", flush=True)
 
         archives = self.root / "archives"
         hashes = self.root / "hashes"
@@ -69,7 +68,6 @@ class Repository(StorageProvider):
 
         if artifact.manifest:
 
-            print(f"DEBUG: Copying manifest {artifact.manifest} to {manifests / artifact.manifest.name}", flush=True)
             self._copy(
                 artifact.manifest,
                 manifests / artifact.manifest.name

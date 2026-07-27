@@ -399,7 +399,6 @@ def main():
     # Manifest
     logger.section("Manifest")
     manifest = build_manifest(day_dir, backup_id=backup_id)
-    print(f"DEBUG: manifest returned from build_manifest: {manifest}", flush=True)
     logger.end_section()
 
     # Archive

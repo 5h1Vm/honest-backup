@@ -1,4 +1,15 @@
+# Python packages. The system tools (age, zstd, rclone, keepassxc-cli) are
+# not pip packages — setup.sh installs those.
+
+# Terminal interface
+textual==8.2.8
+rich==15.0.0
+
+# Microsoft 365
 msal==1.37.0
-notion-client==3.1.0
-playwright==1.61.0
 requests==2.31.0
+cryptography==41.0.7      # SharePoint REST needs certificate auth
+
+# Notion
+notion-client==3.1.0
+playwright==1.61.0        # the workspace export is browser-driven
