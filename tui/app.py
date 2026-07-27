@@ -28,6 +28,7 @@ import itertools
 import os
 import re
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,7 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
     TextArea,
+    Tree,
 )
 from textual.widgets.option_list import Option
 
@@ -504,7 +506,7 @@ class ArrowNavigation:
     # Every control a person can actually operate, in the order they appear.
     CONTROLS = (
         "Button, Input, Switch, Select, TextArea, "
-        "DataTable, OptionList, DirectoryTree, RichLog"
+        "DataTable, OptionList, DirectoryTree, Tree, RichLog"
     )
 
     def _controls(self) -> list:
@@ -1136,39 +1138,191 @@ it still matches the fingerprint recorded when it was made.[/]
         self.app.call_from_thread(render)
 
 
+def extract_one_file(backup_id: str, inner_path: str) -> tuple[bytes | None, str]:
+    """Pull a single file out of an encrypted backup, without unpacking it all.
+
+    age and zstd stream, and tar stops reading once it has found the member,
+    so this costs a fraction of a second even on a large archive. Returns
+    (contents, error message).
+    """
+    archive = archive_path(backup_id)
+    if not archive.exists():
+        return None, "the archive for this backup is not on this computer"
+    if not PRIVATE_KEY.exists():
+        return None, f"the key is missing ({PRIVATE_KEY.name})"
+
+    # Everything in the tar sits under a folder named for the backup's day.
+    member = f"{backup_id[:10]}/{inner_path}"
+    pipeline = (
+        f"age -d -i {shlex.quote(str(PRIVATE_KEY))} {shlex.quote(str(archive))} "
+        f"| zstd -dc | tar -xO -f - {shlex.quote(member)}"
+    )
+    try:
+        done = subprocess.run(["bash", "-c", pipeline],
+                              capture_output=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, str(exc)
+    if not done.stdout:
+        detail = (done.stderr or b"").decode("utf-8", "replace").strip()
+        return None, detail.splitlines()[-1] if detail else "file not found in the archive"
+    return done.stdout, ""
+
+
+def preview_bytes(name: str, blob: bytes, log: RichLog) -> None:
+    """Render bytes pulled straight out of an archive."""
+    log.clear()
+    suffix = Path(name).suffix.lower()
+
+    def heading():
+        leaf = Path(name).name
+        folder = str(Path(name).parent)
+        log.write(f"[b {CYAN}]{escape(leaf)}[/]  [{MUTED}]{human_size(len(blob))}[/]")
+        if folder not in (".", ""):
+            log.write(f"[{MUTED}]{escape(folder)}[/]")
+        log.write("")
+
+    if suffix in BINARY_SUFFIXES:
+        heading()
+        log.write(f"[{YELLOW}]This kind of file cannot be shown as text.[/]")
+        log.write(f"[{MUTED}]Restore the backup to open it in its own program.[/]")
+        return
+
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError:
+        heading()
+        log.write(f"[{YELLOW}]This file is not text.[/]")
+        return
+
+    if len(blob) > MAX_PREVIEW_BYTES:
+        text = text[:MAX_PREVIEW_BYTES]
+        truncated = True
+    else:
+        truncated = False
+
+    heading()
+    if suffix == ".json":
+        try:
+            from rich.json import JSON as RichJSON
+            log.write(RichJSON(text, indent=2))
+        except Exception:
+            log.write(escape(text))
+    else:
+        log.write(escape(text))
+    if truncated:
+        log.write(f"\n[{MUTED}]… shown up to {human_size(MAX_PREVIEW_BYTES)}.[/]")
+
+
+BINARY_SUFFIXES = {
+    ".docx", ".xlsx", ".pptx", ".pdf", ".png", ".jpg", ".jpeg", ".gif",
+    ".zip", ".age", ".zst", ".tar", ".kdbx", ".ico", ".woff", ".woff2",
+}
+
+
 class BackupContentsScreen(NavScreen):
-    """Every file inside one backup, from its manifest."""
+    """The files inside one backup, as a tree, with a viewer.
+
+    The archive stays encrypted on disk. Selecting a file decrypts just that
+    one file out of it, which takes a fraction of a second.
+    """
 
     BINDINGS = [Binding("escape", "back", "Back", priority=True)]
 
     def __init__(self, backup_id: str) -> None:
         super().__init__()
         self.backup_id = backup_id
+        self._manifest = load_manifest(backup_id)
 
     def compose(self) -> ComposeResult:
         yield TitleBar(f"Inside the backup · {self.backup_id}")
-        yield RichLog(id="contents-log", markup=True, wrap=False, auto_scroll=False)
+        if not self._manifest:
+            yield Static(
+                f"\n[{YELLOW}]No contents list was recorded for this backup.[/]",
+                id="contents-empty",
+            )
+        else:
+            files = self._manifest.get("files", [])
+            total = human_size(float(self._manifest.get("total_size", 0)))
+            yield Static(
+                f"\n[{WHITE}]{len(files)} file{'' if len(files) == 1 else 's'} · "
+                f"{total}[/]  [{MUTED}]— choose one to read it; it is decrypted "
+                f"only to show you[/]\n",
+                id="contents-summary",
+            )
+            with Horizontal(id="contents-split"):
+                yield Tree("backup", id="contents-tree")
+                yield RichLog(id="contents-preview", markup=True, wrap=True,
+                              auto_scroll=False)
         with Horizontal(classes="button-row"):
             yield Button("← Back", id="contents-back", variant="primary")
-        yield hint_bar("↑ ↓ PgUp PgDn scroll · ← → reach the buttons · Esc goes back")
+        yield hint_bar(
+            "↑ ↓ move · Enter opens a folder or reads a file · "
+            "← → reach the buttons · Esc goes back"
+        )
 
     def on_mount(self) -> None:
-        log = self.query_one("#contents-log", RichLog)
-        manifest = load_manifest(self.backup_id)
-        if not manifest:
-            log.write(f"[{YELLOW}]No contents list was recorded for this backup.[/]")
+        if not self._manifest:
             return
-        files = manifest.get("files", [])
-        log.write(
-            f"[{WHITE}]{len(files)} file{'' if len(files) == 1 else 's'} · "
-            f"{human_size(float(manifest.get('total_size', 0)))} in total[/]\n"
+        tree = self.query_one("#contents-tree", Tree)
+        tree.root.label = f"[b {CYAN}]{self.backup_id}[/]"
+        tree.root.expand()
+        self._build_tree(tree)
+        self.query_one("#contents-preview", RichLog).write(
+            f"[{MUTED}]Choose a file on the left to read it.[/]"
         )
-        for entry in files:
+        tree.focus()
+
+    def _build_tree(self, tree: Tree) -> None:
+        """Turn the manifest's flat paths back into the folders they came from."""
+        folders: dict[str, object] = {"": tree.root}
+
+        def folder_for(path: str):
+            if path in folders:
+                return folders[path]
+            parent_path, _, name = path.rpartition("/")
+            parent = folder_for(parent_path)
+            node = parent.add(f"[{CYAN}]{escape(name)}/[/]", expand=False)
+            folders[path] = node
+            return node
+
+        entries = sorted(
+            self._manifest.get("files", []),
+            key=lambda e: str(e.get("path", "")),
+        )
+        for entry in entries:
+            path = str(entry.get("path", "")).strip("/")
+            if not path:
+                continue
+            parent_path, _, name = path.rpartition("/")
             size = human_size(float(entry.get("size", 0)))
-            log.write(
-                f"  [{MUTED}]{size:>10}[/]  [{WHITE}]{escape(str(entry.get('path', '?')))}[/]"
+            folder_for(parent_path).add_leaf(
+                f"[{WHITE}]{escape(name)}[/]  [{MUTED}]{size}[/]",
+                data=path,
             )
-        log.focus()
+
+    @on(Tree.NodeSelected, "#contents-tree")
+    def _chosen(self, event: Tree.NodeSelected) -> None:
+        path = event.node.data
+        if not path:
+            return          # a folder; Textual expands it for us
+        preview = self.query_one("#contents-preview", RichLog)
+        preview.clear()
+        preview.write(f"[{MUTED}]Opening {escape(Path(path).name)}…[/]")
+        self._open_file(path)
+
+    @work(thread=True, exclusive=True, group="contents-preview")
+    def _open_file(self, path: str) -> None:
+        blob, problem = extract_one_file(self.backup_id, path)
+        self.app.call_from_thread(self._show_file, path, blob, problem)
+
+    def _show_file(self, path: str, blob: bytes | None, problem: str) -> None:
+        preview = self.query_one("#contents-preview", RichLog)
+        if blob is None:
+            preview.clear()
+            preview.write(f"[{RED}]Could not open {escape(Path(path).name)}[/]\n")
+            preview.write(f"[{MUTED}]{escape(problem)}[/]")
+            return
+        preview_bytes(path, blob, preview)
 
     @on(Button.Pressed, "#contents-back")
     def _back_btn(self) -> None:
@@ -3239,6 +3393,15 @@ class HonestbackupTUI(App):
     /* ---------- file browser ---------- */
     #browser-empty {{ height: 1fr; padding: 0 3; }}
     #browser-root {{ margin: 1 2 0 2; }}
+    #contents-split {{ height: 1fr; margin: 0 2 1 2; }}
+    #contents-tree {{
+        width: 45%; min-width: 34;
+        background: {PANEL}; border: round {BORDER};
+        padding: 0 1; margin-right: 1;
+    }}
+    #contents-preview {{ width: 1fr; background: {BLACK}; padding: 0 1; }}
+    #contents-summary {{ padding: 0 2; }}
+
     #browser-split {{ height: 1fr; margin: 0 2 1 2; }}
     #browser-tree {{
         width: 42%;
