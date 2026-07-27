@@ -1,0 +1,207 @@
+# HonestBackup — configuration
+#
+# Copy this file to backup.conf and edit it, or set everything from the
+# terminal interface (First-time setup). No secrets live here: API keys and
+# passwords are held in the credential database, never in this file.
+#
+########################################
+# Core
+########################################
+
+BACKUP_TARGET=./backupvault
+WORKSPACE=workspace
+STATE_DIR=state
+LOG_DIR=logs
+COLLECTOR_DIR=collectors
+RESTORE_DIR=restore
+
+########################################
+# Encryption / Keys
+########################################
+
+# For KeePass encryption (now the only supported method):
+#   SET THESE ENVIRONMENT VARIABLES:
+#       KEEPASS_DATABASE=path/to/kdbx/file
+#       KEEPASS_PASSWORD=master_password
+#
+#   NO SECRETS FILE NEEDED: The secrets are stored directly in the KeePass database.
+#   You must create entries in your KeePass database for each required secret.
+#   The entry title (or UUID) must match the secret variable name expected by the application.
+#
+#   Example: To set the MICROSOFT_TENANT_ID, create an entry in KeePass with title "TENANT_ID"
+#   and store the actual tenant ID in the password field of that entry.
+#
+#   The application expects the following secret variables (each must exist as an entry in KeePass):
+#          TENANT_ID, CLIENT_ID, CLIENT_SECRET, CLOUDFLARE_API_TOKEN
+#          ZONE_ID, CLOUDFLARE_ACCOUNT_ID, NOTION_TOKEN, B2_KEY_ID
+#          B2_APPLICATION_KEY, EMAIL_USERNAME, EMAIL_PASSWORD
+#          WEBHOOK_HMAC_SECRET, SLACK_WEBHOOK_URL, TEAMS_WEBHOOK_URL
+#          PAGERDUTY_INTEGRATION_KEY
+#
+#   Add any other secrets that your specific configuration requires (e.g., for email, webhook, etc.).
+#
+
+# Enable incremental backups using hardlinks to reduce storage usage.
+# When set to true, each new backup will hardlink unchanged files from the most recent backup,
+# storing only new or changed files fully.
+# Requires sufficient inodes on the filesystem.
+INCREMENTAL=true
+
+########################################
+# Collectors
+########################################
+
+ENABLE_M365=true
+ENABLE_CLOUDFLARE=true
+ENABLE_NOTION=true
+
+# Notion Browser Automation
+NOTION_PROFILE_DIR=./honestbackup-profile
+NOTION_BROWSER_EXECUTABLE=/usr/bin/chromium
+NOTION_POLL_INTERVAL_SECONDS=60
+NOTION_EXPORT_TIMEOUT_MINUTES=240
+NOTION_WORKSPACE_URL=https://www.notion.so/your-workspace
+
+# NOTE: Collector secrets (API keys, tokens, etc.) are now retrieved from a KeePass database.
+# They must be stored as entries in the KeePass database with titles matching the SECRET_* keys
+# in the Encryption/Keys section above (e.g., an entry titled "TENANT_ID" for the tenant ID).
+# The KEEPASS_DATABASE and KEEPASS_PASSWORD environment variables must be set.
+# Required secrets:
+#   M365: TENANT_ID, CLIENT_ID, CLIENT_SECRET
+#   Cloudflare: CLOUDFLARE_API_TOKEN
+#   Notion: NOTION_TOKEN
+#   Backblaze: B2_KEY_ID, B2_APPLICATION_KEY
+#   (See README.md for full details)
+
+########################################
+# Repository (Local)
+########################################
+
+REPOSITORY_ENABLED=false
+REPOSITORY_PATH=./backupvault
+
+########################################
+# Backblaze B2
+########################################
+
+BACKBLAZE_ENABLED=true
+BACKBLAZE_REMOTE=backblaze:your-bucket
+BACKBLAZE_BUCKET=your-bucket
+
+########################################
+# USB Storage
+########################################
+
+USB_ENABLED=false
+USB_LABEL=BackupDrive
+USB_BACKUP_PATH=Backup
+
+########################################
+# Notifications (Email Primary)
+########################################
+
+# Email (SMTP with Authentication)
+EMAIL_ENABLED=false
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_SMTP_PORT=587
+# EMAIL_USERNAME=store_in_keepass  # Replace with actual secret in KeePass database
+# EMAIL_PASSWORD=store_in_keepass  # Replace with actual secret in KeePass database
+EMAIL_USE_TLS=true
+EMAIL_FROM=HonestBackup <alerts@example.com>
+EMAIL_TO=you@example.com
+EMAIL_SEVERITY=warning,error,critical
+EMAIL_RATE_LIMIT=10
+
+# Webhook (Generic, HMAC Signed)
+WEBHOOK_ENABLED=false
+WEBHOOK_URL=https://your-webhook.example.com/backup
+WEBHOOK_METHOD=POST
+WEBHOOK_HEADERS={"Content-Type": "application/json", "Authorization": "Bearer secret"}
+# WEBHOOK_HMAC_SECRET=store_in_keepass  # Replace with actual secret in KeePass database
+WEBHOOK_SEVERITY=warning,error,critical
+WEBHOOK_RATE_LIMIT=30
+
+# Slack (Incoming Webhook)
+SLACK_ENABLED=false
+# SLACK_WEBHOOK_URL=store_in_keepass  # Replace with actual secret in KeePass database
+SLACK_CHANNEL=#backup-alerts
+SLACK_SEVERITY=warning,error,critical
+SLACK_RATE_LIMIT=20
+
+# Microsoft Teams (Incoming Webhook)
+TEAMS_ENABLED=false
+# TEAMS_WEBHOOK_URL=store_in_keepass  # Replace with actual secret in KeePass database
+TEAMS_SEVERITY=warning,error,critical
+TEAMS_RATE_LIMIT=20
+
+# PagerDuty (Events API v2)
+PAGERDUTY_ENABLED=false
+# PAGERDUTY_INTEGRATION_KEY=store_in_keepass  # Replace with actual secret in KeePass database
+PAGERDUTY_MIN_SEVERITY=error
+PAGERDUTY_RATE_LIMIT=10
+
+# Telegram (Bot API)
+TELEGRAM_ENABLED=true
+# TELEGRAM_BOT_TOKEN=store_in_keepass  # Replace with actual secret in KeePass database
+TELEGRAM_CHAT_ID=000000000
+TELEGRAM_SEVERITY=warning,error,critical
+TELEGRAM_RATE_LIMIT=10
+
+########################################
+# Compliance & Security
+########################################
+
+# Audit log level
+LOG_LEVEL=INFO
+# Audit retention (days)
+AUDIT_RETENTION_DAYS=90
+# Notification history encryption
+NOTIFICATION_ENCRYPTION=true
+
+########################################
+# Automatic runs (cron)
+########################################
+# Set these from the TUI's Scheduling screen rather than by hand.
+# This machine runs on UTC, so the times below are converted before they
+# reach cron — 01:00 Asia/Kolkata is written into the crontab as 19:30 UTC.
+CRON_ENABLED=true
+CRON_TIMEZONE=Asia/Kolkata
+
+# When each service runs. A comma-separated list of clock times, read in
+# CRON_TIMEZONE. A service can run once a day or twenty times; each keeps
+# its own list. Services sharing a time share one backup run.
+M365_TIMES=01:00,13:00
+CLOUDFLARE_TIMES=01:00,13:00
+NOTION_TIMES=01:00
+
+########################################
+# Retention — how long backups are kept
+# 0 = keep forever. Each destination is independent.
+########################################
+LOCAL_RETENTION_DAYS=14
+BACKBLAZE_RETENTION_DAYS=180
+USB_RETENTION_DAYS=90
+
+########################################
+# Microsoft 365 content collection
+########################################
+
+# Download actual file contents from OneDrive and SharePoint,
+# not just a listing of what exists.
+M365_DOWNLOAD_FILES=true
+
+# Download mail attachments alongside message bodies.
+M365_DOWNLOAD_ATTACHMENTS=true
+
+# Download Teams channel message content (needs ChannelMessage.Read.All).
+M365_DOWNLOAD_TEAMS_MESSAGES=true
+
+# Skip any single file larger than this (MB).
+M365_MAX_FILE_MB=100
+
+# Stop downloading file content once a run reaches this total (GB).
+M365_MAX_TOTAL_GB=5
+
+# How far back to pull Unified Audit Log events each run (hours).
+# Microsoft keeps the feed for 7 days, so run at least weekly.
+M365_UNIFIED_AUDIT_HOURS=24

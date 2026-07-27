@@ -1,0 +1,45 @@
+# HonestBackup — office copy
+#
+# Copy this file to pull.conf and edit the two settings at the top.
+# Everything below them has a sensible default.
+
+# ---------------------------------------------------------------------------
+# Where the backups come from
+# ---------------------------------------------------------------------------
+# An rclone remote and path. Must match the bucket the server writes to.
+# Set the remote up once with:  rclone config
+REMOTE=backblaze:your-bucket
+
+# ---------------------------------------------------------------------------
+# Where they go
+# ---------------------------------------------------------------------------
+# The external drive. Use the drive letter on Windows.
+#   Windows:  DESTINATION=D:\HonestBackup
+#   macOS:    DESTINATION=/Volumes/HonestBackup
+#   Linux:    DESTINATION=/mnt/honestbackup
+DESTINATION=D:\HonestBackup
+
+# ---------------------------------------------------------------------------
+# Options
+# ---------------------------------------------------------------------------
+
+# Check every newly copied archive against its SHA-256.
+VERIFY=true
+
+# Write this drive's status back to the cloud, so the server's terminal
+# interface can show whether the office copy is up to date.
+PUBLISH_STATUS=true
+
+# Where that status file goes. Defaults to <REMOTE>/status.
+STATUS_REMOTE=backblaze:your-bucket/status
+
+# A name for this drive, used in the status file. Defaults to the computer
+# name. Set it if you ever run more than one office copy.
+SITE=office-laptop
+
+# Cap the download speed so the office line stays usable, e.g. 10M.
+# Leave empty for no limit.
+BANDWIDTH_LIMIT=
+
+# Parallel transfers. 4 is fine for most connections.
+TRANSFERS=4

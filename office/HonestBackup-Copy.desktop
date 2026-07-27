@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=HonestBackup — Copy to Drive
+Comment=Copy the backup archive from Backblaze onto the office drive
+Icon=drive-harddisk
+Terminal=true
+Categories=Utility;Archiving;
+# Exec is rewritten to an absolute path by install-desktop.sh, because a
+# .desktop file is launched from an arbitrary working directory and a
+# relative path here would simply fail to start.
+Exec=copy-now.sh

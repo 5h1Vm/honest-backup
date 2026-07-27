@@ -1,0 +1,151 @@
+# =========================
+# Python
+# =========================
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+
+# =========================
+# Secrets / Credentials
+# =========================
+
+*.age
+*.tar.zst.age
+*.pem
+*.key
+*.env
+*.secret
+*.token
+*.kdbx
+
+config/runtime/
+config/keys/
+config/public/
+config/secrets.env.age
+config/secrets.env.age.bak
+
+
+# =========================
+# Archives / Backups / Exports
+# =========================
+
+*.tar
+*.tar.zst
+*.tar.gz
+*.gz
+*.zip
+
+*ExportBlock*.zip
+
+
+# =========================
+# Workspace / Runtime Data
+# =========================
+
+workspace/
+restore/
+state/
+logs/
+BACKBLAZE_REMOTE/
+placeholder-backupvault/
+
+
+# =========================
+# Playwright
+# =========================
+
+playwright-artifacts-*
+/tmp/playwright-artifacts-*
+
+
+# =========================
+# Configuration
+# =========================
+# Real config holds deployment-specific values (bucket names, chat ids,
+# paths). The .example files are committed; the live ones never are.
+
+*.conf
+!*.conf.example
+
+
+# =========================
+# IDE
+# =========================
+
+.vscode/
+.idea/
+
+
+# =========================
+# OS Files
+# =========================
+
+.DS_Store
+Thumbs.db
+
+
+# =========================
+# REPOSITORY Browser Profile
+# =========================
+
+honestbackup-profile/
+honestbackup-profile.tar.gz
+# =========================
+# Virtual Environments
+# =========================
+.venv/
+env/
+ENV/
+
+# =========================
+# Testing / Coverage
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.hypothesis/
+
+# =========================
+# Miscellaneous
+# =========================
+.DS_Store
+Thumbs.db
+
+# Backups
+backupvault/
+*.kdbx
+*.sha256
+*.manifest.json
+
+# Office copy: machine-specific, created from pull.conf.example
+office/pull.conf
+office/*.log
+
+
+# =========================
+# Office copy runtime
+# =========================
+office/office-index.json
+office/office-status.json
+
+# =========================
+# Ledger and vault state
+# =========================
+ledger.json
+backupvault/
+
+# =========================
+# Anything that looks like a credential
+# =========================
+*.cer
+*.crt
+*.p12
+*.pfx
+.env.*
+!.env.example

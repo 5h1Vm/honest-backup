@@ -1,0 +1,4 @@
+msal==1.37.0
+notion-client==3.1.0
+playwright==1.61.0
+requests==2.31.0
