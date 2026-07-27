@@ -8,9 +8,24 @@ backup.conf and editable from the TUI:
     BACKBLAZE_RETENTION_DAYS   archives in the Backblaze bucket
     USB_RETENTION_DAYS         archives on the USB/HDD copy
 
-A value of 0 (or "forever") means never delete from that destination.
-This is what makes tiered retention possible: keep a short window on the
-VM's disk while the cloud and the external drive keep a longer history.
+A setting is a number of days, or one of two words:
+
+    0          on the LOCAL vault only: keep a backup here just until it
+               exists somewhere else, then delete it. For a small server
+               disk that is only a stop on the way to Backblaze.
+               On Backblaze or the drive it means "never delete" - those
+               are the last copies, with nothing further along to check
+               against.
+    forever    never delete from here.
+    N          keep for N days. A backup lives out its whole Nth day and
+               goes on the first run after it is older than N days, so
+               BACKBLAZE_RETENTION_DAYS=730 deletes on day 731.
+
+This is what makes tiered retention possible: keep almost nothing on the
+VM while the cloud and the external drive keep a longer history.
+
+Retention runs at the end of every backup, not on a timer of its own. If
+backups stop running, nothing is deleted.
 
 A backup is identified by its ID (YYYY-MM-DD_HH-MM-SS) and consists of
 three files that are always pruned together:
@@ -52,16 +67,49 @@ BACKUP_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
 ARCHIVE_SUFFIX = ".tar.zst.age"
 
 
+# What a retention setting can mean.
+KEEP_FOREVER = -1     # never delete from this destination
+STAGING_ONLY = 0      # keep only until a copy exists elsewhere, then delete
+
+
 def _days(key: str) -> int:
-    """Retention window in days; 0 means keep forever."""
-    raw = str(CFG.get(key, "0")).strip().lower()
-    if raw in ("", "0", "forever", "never", "keep", "unlimited"):
-        return 0
+    """Turn a retention setting into a number of days.
+
+    Three distinct meanings, which used to be collapsed into one:
+
+        0                 staging: delete as soon as the backup is safely
+                          somewhere else. Useful on a small server disk that
+                          is only a stop on the way to Backblaze.
+        forever / blank   never delete from here.
+        N                 keep for N days.
+
+    Anything unparseable is treated as "forever" - refusing to delete is the
+    safe way to be wrong - but the caller is told so it can say something
+    rather than silently keeping everything.
+    """
+    raw = str(CFG.get(key, "forever")).strip().lower()
+    if raw == "0":
+        return STAGING_ONLY
+    if raw in ("", "forever", "never", "keep", "unlimited", "-1"):
+        return KEEP_FOREVER
     try:
         value = int(raw)
     except ValueError:
-        return 0
-    return max(value, 0)
+        return KEEP_FOREVER
+    return value if value > 0 else STAGING_ONLY
+
+
+def misconfigured(key: str) -> str | None:
+    """A complaint about this setting, if it does not make sense."""
+    raw = str(CFG.get(key, "forever")).strip().lower()
+    if raw in ("", "0", "forever", "never", "keep", "unlimited", "-1"):
+        return None
+    try:
+        int(raw)
+    except ValueError:
+        return (f"{key}={raw!r} is not a number of days, so nothing will be "
+                f"deleted from this destination. Use a number, 0, or 'forever'.")
+    return None
 
 
 def local_days() -> int:
@@ -111,8 +159,15 @@ class DestinationResult:
             return f"{self.name}: {self.error}"
         if not self.reachable:
             return f"{self.name}: not reachable"
-        if self.days == 0:
+        if self.days == KEEP_FOREVER:
             return f"{self.name}: keeping everything ({self.kept} backups)"
+        if self.days == STAGING_ONLY:
+            return (
+                f"{self.name}: staging only — {self.kept} kept, "
+                f"{len(self.deleted)} removed once copied elsewhere"
+                + (f", {len(self.skipped)} not yet copied"
+                   if self.skipped else "")
+            )
         return (
             f"{self.name}: keeping {self.days} days — "
             f"{self.kept} kept, {len(self.deleted)} removed"
@@ -163,13 +218,24 @@ def usb_destination() -> Path | None:
 # Deciding what to drop
 # ----------------------------------------------------------------------
 def expired(ids: list[str], days: int, now: datetime | None = None) -> list[str]:
-    """IDs older than the window. The newest backup is always kept."""
-    if days <= 0 or not ids:
+    """IDs past the window. The newest backup is always kept, whatever it says.
+
+    days == STAGING_ONLY returns everything but the newest: the age of the
+    backup is irrelevant, only whether it has been copied elsewhere, and the
+    caller checks that.
+
+    Otherwise a backup goes when it is *older* than the window. With
+    BACKBLAZE_RETENTION_DAYS=730, a backup survives its whole 730th day and
+    is removed on the run after it turns 731 days old.
+    """
+    if not ids or days == KEEP_FOREVER:
         return []
-    now = now or datetime.now()
-    cutoff = now - timedelta(days=days)
     ordered = sorted(ids)
     newest = ordered[-1]
+    if days == STAGING_ONLY:
+        return [backup_id for backup_id in ordered if backup_id != newest]
+    now = now or datetime.now()
+    cutoff = now - timedelta(days=days)
     out = []
     for backup_id in ordered:
         if backup_id == newest:
@@ -194,7 +260,7 @@ def prune_local(dry_run: bool = False, now: datetime | None = None) -> Destinati
     root = Path(REPOSITORY_PATH)
     ids = list_local_ids(root)
     result.kept = len(ids)
-    if result.days == 0:
+    if result.days == KEEP_FOREVER:
         return result
 
     candidates = expired(ids, result.days, now)
@@ -211,6 +277,13 @@ def prune_local(dry_run: bool = False, now: datetime | None = None) -> Destinati
         if destination is not None:
             other_destination = True
             elsewhere.update(list_remote_ids(str(destination)))
+
+    if result.days == STAGING_ONLY and not other_destination:
+        # "delete once copied elsewhere" with nowhere else configured would
+        # mean deleting the only copy. Refuse and say why.
+        result.error = ("set to keep nothing, but no cloud or drive copy is "
+                        "enabled - keeping everything instead")
+        return result
 
     for backup_id in candidates:
         if other_destination and backup_id not in elsewhere:
@@ -236,13 +309,21 @@ def _prune_remote(
     dry_run: bool,
     now: datetime | None,
 ) -> DestinationResult:
+    # "Delete once it exists somewhere else" only makes sense for the local
+    # vault, which is a staging post on the way to here. Backblaze and the
+    # drive ARE the somewhere else — there is nothing further along to check
+    # against, so 0 here can only mean "keep it". Treating it as staging
+    # would delete every archive but the newest from the last copy there is.
+    if days == STAGING_ONLY:
+        days = KEEP_FOREVER
+
     result = DestinationResult(name=name, enabled=enabled, days=days)
     if not enabled or remote is None:
         return result
     ids = list_remote_ids(remote)
     result.reachable = True
     result.kept = len(ids)
-    if days == 0 or not ids:
+    if days == KEEP_FOREVER or not ids:
         return result
     for backup_id in expired(ids, days, now):
         if not dry_run:

@@ -1523,15 +1523,15 @@ class ScheduleScreen(NavScreen):
                 f"\n[b {CYAN}]How long backups are kept[/]\n"
                 f"[{MUTED}]Each place keeps its own history — a short one here "
                 f"to save disk space, longer ones elsewhere. "
-                f"Use 0 to keep everything forever.[/]\n"
+                f"Type a number of days, 0, or the word forever.[/]\n"
             )
             for label, key, note in [
                 ("On this computer", "LOCAL_RETENTION_DAYS",
-                 "only deleted once a copy exists elsewhere"),
+                 "0 = delete as soon as it reaches the cloud or drive"),
                 ("On Backblaze (cloud)", "BACKBLAZE_RETENTION_DAYS",
-                 "your long-term history"),
+                 "730 deletes on day 731; 0 or forever = never delete"),
                 ("On the USB / external drive", "USB_RETENTION_DAYS",
-                 "applied when the drive is connected"),
+                 "applied when the drive is connected; 0 = never delete"),
             ]:
                 with Horizontal(classes="schedule-row"):
                     yield Static(
@@ -1540,14 +1540,15 @@ class ScheduleScreen(NavScreen):
                     )
                     yield Static("keep", classes="schedule-every")
                     yield Input(
-                        value=cfg.get(key, "0"),
+                        value=cfg.get(key, "forever"),
+                        placeholder="14",
                         id=f"sched-keep-{key}",
                         classes="schedule-hours",
-                        type="integer",
                     )
                     yield Static("days", classes="schedule-every")
             yield Static(
-                f"\n[{MUTED}]The newest backup is never deleted, whatever these "
+                f"\n[{MUTED}]Tidying happens at the end of each backup run. "
+                f"The newest backup is never deleted, whatever these "
                 f"say.[/]\n"
             )
         with Horizontal(classes="button-row"):
@@ -1737,9 +1738,20 @@ class ScheduleScreen(NavScreen):
 
         for key in ("LOCAL_RETENTION_DAYS", "BACKBLAZE_RETENTION_DAYS",
                     "USB_RETENTION_DAYS"):
-            days = self.query_one(f"#sched-keep-{key}", Input).value.strip()
-            if days.isdigit():
-                updates[key] = days
+            box = self.query_one(f"#sched-keep-{key}", Input)
+            days = box.value.strip()
+            if not days:
+                continue
+            if days.isdigit() or days.lower() in ("forever", "never"):
+                updates[key] = days.lower() if not days.isdigit() else days
+            else:
+                self.notify(
+                    f"'{days}' is not a number of days. Type a number, 0, "
+                    f"or the word forever.",
+                    title="Scheduling", severity="error",
+                )
+                box.focus()
+                return
 
         try:
             save_conf_values(CONF_PATH, updates)

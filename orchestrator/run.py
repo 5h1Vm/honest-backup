@@ -475,7 +475,15 @@ def main():
     # Retention (per-destination windows)
     logger.section("Retention")
     try:
-        from .retention import apply_retention
+        from .retention import apply_retention, misconfigured
+
+        # A retention setting that is not a number silently kept everything
+        # for ever. Say so, rather than letting the disk fill in silence.
+        for key in ("LOCAL_RETENTION_DAYS", "BACKBLAZE_RETENTION_DAYS",
+                    "USB_RETENTION_DAYS"):
+            complaint = misconfigured(key)
+            if complaint:
+                logger.warning(complaint)
 
         for outcome in apply_retention():
             logger.info(outcome.summary)
