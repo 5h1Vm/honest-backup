@@ -6,7 +6,6 @@ from storage.artifact import BackupArtifact
 
 @dataclass(slots=True)
 class BackupSession:
-
     backup_id: str
 
     started: datetime
@@ -28,16 +27,11 @@ class BackupSession:
     replicated: dict = field(default_factory=dict)
 
     def finish(self):
-
         self.finished = datetime.now()
 
     @property
     def duration(self):
-
         if self.finished is None:
             return None
 
-        return (
-            self.finished -
-            self.started
-        ).total_seconds()
+        return (self.finished - self.started).total_seconds()

@@ -523,7 +523,7 @@ HonestbackupTUI (App)
 ### Installation
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/5h1Vm/jugaad-backup.git
+   git clone https://github.com/5h1Vm/honest-backup.git
    cd honnestbackup
    ```
 2. **Install system dependencies**:

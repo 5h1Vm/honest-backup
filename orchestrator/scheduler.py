@@ -12,57 +12,34 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-
-STATE_FILE = Path(
-    "state/scheduler/state.json"
-)
+STATE_FILE = Path("state/scheduler/state.json")
 
 
 class Scheduler:
-
     def __init__(self):
-
         STATE_FILE.parent.mkdir(
             parents=True,
             exist_ok=True,
         )
-
         if not STATE_FILE.exists():
-
-            STATE_FILE.write_text(
-                "{}"
-            )
+            STATE_FILE.write_text("{}")
 
         try:
-            self.state = json.loads(
-                STATE_FILE.read_text()
-            )
+            self.state = json.loads(STATE_FILE.read_text())
         except Exception:
             self.state = {}
 
     def save(self):
-
         STATE_FILE.write_text(
-
             json.dumps(
-
                 self.state,
-
                 indent=4,
-
             )
-
         )
 
     def mark_complete(
         self,
         collector,
     ):
-
-        self.state[collector] = (
-
-            datetime.now().isoformat()
-
-        )
-
+        self.state[collector] = datetime.now().isoformat()
         self.save()

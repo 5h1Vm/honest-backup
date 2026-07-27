@@ -3,31 +3,20 @@ from datetime import timedelta
 
 import shutil
 
-from .config import (
-    WORKSPACE,
-    WORKSPACE_RETENTION_DAYS
-)
+from .config import WORKSPACE, WORKSPACE_RETENTION_DAYS
 
 
 def cleanup_workspace():
-
-    cutoff = (
-        datetime.now()
-        - timedelta(days=WORKSPACE_RETENTION_DAYS)
-    )
+    cutoff = datetime.now() - timedelta(days=WORKSPACE_RETENTION_DAYS)
 
     deleted = []
 
     for item in WORKSPACE.iterdir():
-
         if not item.is_dir():
             continue
 
         try:
-            day = datetime.strptime(
-                item.name,
-                '%Y-%m-%d'
-            )
+            day = datetime.strptime(item.name, "%Y-%m-%d")
         except Exception:
             continue
 

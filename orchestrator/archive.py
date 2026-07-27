@@ -13,15 +13,11 @@ from .config import (
 
 
 def sha256_file(path: Path) -> str:
-
     h = hashlib.sha256()
 
     with open(path, "rb") as f:
-
         while True:
-
             chunk = f.read(1024 * 1024)
-
             if not chunk:
                 break
 
@@ -31,15 +27,11 @@ def sha256_file(path: Path) -> str:
 
 
 def build_archive(
-
     backup_id: str,
     day: str,
     manifest=None,
     report=None,
-
 ):
-
-
     workspace = WORKSPACE / day
 
     archive_dir = WORKSPACE / "archive"
@@ -101,21 +93,13 @@ def build_archive(
     zst_file.unlink()
 
     artifact = BackupArtifact(
-
         backup_id=backup_id,
-
         created=datetime.now(),
-
         archive=encrypted,
-
         sha256=hash_file,
-
         manifest=manifest,
-
         report=report,
-
         size=encrypted.stat().st_size,
-
     )
 
     return artifact

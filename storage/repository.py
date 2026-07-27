@@ -11,67 +11,35 @@ from .config import (
 
 
 class Repository(StorageProvider):
-
     name = "REPOSITORY"
 
     def __init__(self):
-
         self.root = Path(REPOSITORY_PATH)
 
     def enabled(self) -> bool:
-
         return REPOSITORY_ENABLED
 
     def healthcheck(self) -> bool:
-
         self.root.mkdir(
             parents=True,
             exist_ok=True,
         )
-
         return True
 
     def upload(
         self,
         artifact: BackupArtifact,
     ) -> bool:
-
-
         archives = self.root / "archives"
         hashes = self.root / "hashes"
         manifests = self.root / "manifests"
-
-        archives.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        hashes.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        manifests.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        self._copy(
-            artifact.archive,
-            archives / artifact.archive.name
-        )
-
-        self._copy(
-            artifact.sha256,
-            hashes / artifact.sha256.name
-        )
-
+        archives.mkdir(parents=True, exist_ok=True)
+        hashes.mkdir(parents=True, exist_ok=True)
+        manifests.mkdir(parents=True, exist_ok=True)
+        self._copy(artifact.archive, archives / artifact.archive.name)
+        self._copy(artifact.sha256, hashes / artifact.sha256.name)
         if artifact.manifest:
-
-            self._copy(
-                artifact.manifest,
-                manifests / artifact.manifest.name
-            )
+            self._copy(artifact.manifest, manifests / artifact.manifest.name)
 
         return True
 
@@ -80,60 +48,27 @@ class Repository(StorageProvider):
         backup_name: str,
         destination: Path,
     ) -> bool:
-
-        archive = (
-
-            self.root
-            / "archives"
-            / f"{backup_name}.tar.zst.age"
-
-        )
-
+        archive = self.root / "archives" / f"{backup_name}.tar.zst.age"
         if not archive.exists():
-
             return False
 
-        destination.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        shutil.copy2(
-            archive,
-            destination / archive.name
-        )
-
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(archive, destination / archive.name)
         return True
 
     def delete(
         self,
         backup_name: str,
     ) -> bool:
-
         removed = False
-
         for folder, ext in [
-
             ("archives", ".tar.zst.age"),
-
             ("hashes", ".sha256"),
-
             ("manifests", ".manifest.json"),
-
         ]:
-
-            file = (
-
-                self.root
-                / folder
-                / f"{backup_name}{ext}"
-
-            )
-
+            file = self.root / folder / f"{backup_name}{ext}"
             if file.exists():
-
                 file.unlink()
-
                 removed = True
 
         return removed
@@ -142,36 +77,16 @@ class Repository(StorageProvider):
         self,
         backup_name: str,
     ) -> bool:
-
-        return (
-
-            self.root
-            / "archives"
-            / f"{backup_name}.tar.zst.age"
-
-        ).exists()
+        return (self.root / "archives" / f"{backup_name}.tar.zst.age").exists()
 
     def list_backups(self):
-
         archives = self.root / "archives"
-
         if not archives.exists():
-
             return []
 
         return [
-
-            file.name.replace(
-                ".tar.zst.age",
-                ""
-            )
-
-            for file in sorted(
-                archives.glob(
-                    "*.tar.zst.age"
-                )
-            )
-
+            file.name.replace(".tar.zst.age", "")
+            for file in sorted(archives.glob("*.tar.zst.age"))
         ]
 
     def _copy(
@@ -179,12 +94,7 @@ class Repository(StorageProvider):
         src: Path,
         dst: Path,
     ):
-
         if src.resolve() == dst.resolve():
-
             return
 
-        shutil.copy2(
-            src,
-            dst
-        )
+        shutil.copy2(src, dst)

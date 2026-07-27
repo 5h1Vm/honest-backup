@@ -2,21 +2,20 @@ from pathlib import Path
 
 from .config import CFG
 
-
-REPORT_ROOT = Path(
-    CFG.get(
-        "REPOSITORY_PATH",
-        "placeholder-backupvault",
+REPORT_ROOT = (
+    Path(
+        CFG.get(
+            "REPOSITORY_PATH",
+            "placeholder-backupvault",
+        )
     )
-) / "reports"
+    / "reports"
+)
 
 
 class ReportWriter:
-
     def __init__(self):
-
         self.daily = REPORT_ROOT / "daily"
-
         self.daily.mkdir(
             parents=True,
             exist_ok=True,
@@ -27,34 +26,23 @@ class ReportWriter:
         artifact,
         session,
     ):
-
-        filename = (
-            self.daily /
-            f"{session.started.strftime('%Y-%m-%d')}.md"
-        )
-
+        filename = self.daily / f"{session.started.strftime('%Y-%m-%d')}.md"
         new_file = not filename.exists()
-
         with open(
             filename,
             "a",
             encoding="utf-8",
         ) as f:
-
             if new_file:
-
-                f.write(
-f"""# HonestBackup Daily Report
+                f.write(f"""# HonestBackup Daily Report
 
 Date: {session.started.strftime('%Y-%m-%d')}
 
 ---
 
-"""
-                )
+""")
 
-            f.write(
-f"""
+            f.write(f"""
 ## Backup
 
 Backup ID : {artifact.backup_id}
@@ -81,19 +69,13 @@ Backblaze : {"YES" if session.replicated.get("backblaze") else "NO"}
 
 Collectors
 
-"""
-            )
+""")
 
             for collector in session.collectors:
+                f.write(f"- {collector}\n")
 
-                f.write(
-                    f"- {collector}\n"
-                )
-
-            f.write(
-"""
+            f.write("""
 
 ------------------------------------------------------------
 
-"""
-            )
+""")

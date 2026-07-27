@@ -45,8 +45,8 @@ file size comparison where it doesn't.
 **You need:** Python 3.11+, `age`, `zstd`, `rclone`, `keepassxc-cli`.
 
 ```bash
-git clone https://github.com/5h1Vm/jugaad-backup.git
-cd jugaad-backup
+git clone https://github.com/5h1Vm/honest-backup.git
+cd honest-backup
 ./setup.sh
 ```
 

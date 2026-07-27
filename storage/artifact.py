@@ -25,17 +25,14 @@ class BackupArtifact:
 
     @property
     def archive_name(self):
-
         return self.archive.name
 
     @property
     def checksum_name(self):
-
         return self.sha256.name
 
     @property
     def manifest_name(self):
-
         if self.manifest is None:
             return None
 

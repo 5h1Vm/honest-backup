@@ -7,7 +7,6 @@ from msal import ConfidentialClientApplication
 
 from .secrets import load_env
 
-
 # Statuses worth retrying: throttling and transient service errors.
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 MAX_ATTEMPTS = 4
@@ -31,9 +30,7 @@ def _certificate_credential():
     from cryptography.hazmat.primitives import serialization
 
     cert = x509.load_pem_x509_certificate(CERT_PUB.read_bytes())
-    thumbprint = hashlib.sha1(
-        cert.public_bytes(serialization.Encoding.DER)
-    ).hexdigest()
+    thumbprint = hashlib.sha1(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
 
     return {
         "private_key": CERT_KEY.read_text(),
@@ -42,8 +39,7 @@ def _certificate_credential():
     }
 
 
-def get_token(resource="https://graph.microsoft.com/.default",
-              use_certificate=False):
+def get_token(resource="https://graph.microsoft.com/.default", use_certificate=False):
     """Acquire an app-only token.
 
     Pass a different resource scope to reach APIs outside Graph (for example
@@ -75,7 +71,6 @@ def get_token(resource="https://graph.microsoft.com/.default",
     token = app.acquire_token_for_client(scopes=[resource])
 
     if "access_token" not in token:
-
         raise Exception(token)
 
     return token["access_token"]
@@ -87,7 +82,6 @@ def _request(method, url, headers, json_body=None, timeout=120):
     last_error = None
 
     for attempt in range(MAX_ATTEMPTS):
-
         try:
             r = requests.request(
                 method,
@@ -98,20 +92,18 @@ def _request(method, url, headers, json_body=None, timeout=120):
             )
         except requests.RequestException as e:
             last_error = e
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
             continue
 
         if r.status_code in RETRY_STATUSES and attempt < MAX_ATTEMPTS - 1:
             # Honour Retry-After when the service sends one.
             delay = r.headers.get("Retry-After")
             try:
-                wait = int(delay) if delay else 2 ** attempt
+                wait = int(delay) if delay else 2**attempt
             except ValueError:
-                wait = 2 ** attempt
+                wait = 2**attempt
             time.sleep(min(wait, 60))
-            last_error = requests.HTTPError(
-                f"{r.status_code} from {url}", response=r
-            )
+            last_error = requests.HTTPError(f"{r.status_code} from {url}", response=r)
             continue
 
         r.raise_for_status()
@@ -120,31 +112,20 @@ def _request(method, url, headers, json_body=None, timeout=120):
     raise last_error
 
 
-def graph_paginated_get(
-    url,
-    headers
-):
-
+def graph_paginated_get(url, headers):
     results = []
 
     while url:
-
         r = _request("GET", url, headers)
-
         data = r.json()
-
         value = data.get("value")
-
         if value is None:
             # A single object rather than a collection.
             data.pop("@odata.context", None)
             return [data]
 
         results.extend(value)
-
-        url = data.get(
-            "@odata.nextLink"
-        )
+        url = data.get("@odata.nextLink")
 
     return results
 
@@ -166,9 +147,7 @@ def graph_download(url, headers, destination, timeout=300):
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    with requests.get(
-        url, headers=headers, stream=True, timeout=timeout
-    ) as r:
+    with requests.get(url, headers=headers, stream=True, timeout=timeout) as r:
         r.raise_for_status()
         written = 0
         with open(destination, "wb") as f:
@@ -180,11 +159,7 @@ def graph_download(url, headers, destination, timeout=300):
     return written
 
 
-def graph_delta_get(
-    url,
-    headers,
-    delta_link=None
-):
+def graph_delta_get(url, headers, delta_link=None):
     """
     Perform a delta query.
     If delta_link is provided, it is used as the request URL (the delta link from previous call).
@@ -195,7 +170,7 @@ def graph_delta_get(
         request_url = delta_link
     else:
         # Append $delta=true
-        separator = '&' if '?' in url else '?'
+        separator = "&" if "?" in url else "?"
         request_url = f"{url}{separator}$delta=true"
 
     items = []
@@ -204,13 +179,12 @@ def graph_delta_get(
     while request_url:
         r = _request("GET", request_url, headers)
         data = r.json()
-
-        items.extend(data.get('value', []))
+        items.extend(data.get("value", []))
 
         # If there is a next page, continue
-        request_url = data.get('@odata.nextLink')
+        request_url = data.get("@odata.nextLink")
         # If no next page, this is the last response; capture deltaLink if present
         if not request_url:
-            new_delta_link = data.get('@odata.deltaLink')
+            new_delta_link = data.get("@odata.deltaLink")
 
     return items, new_delta_link
