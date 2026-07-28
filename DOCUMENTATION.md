@@ -381,7 +381,7 @@ Provide an **interactive, discoverable** way to:
 ### Technology Choice: **Textual**
 - **Declarative UI** (similar to React) but in pure Python.
 - Built‑in support for **asynchronous workers**, **modal screens**, **reactive properties**.
-- Actively maintained, good documentation, and permissive license (MIT).
+- Actively maintained, with good documentation.
 - Allows us to create a **single‑code‑base TUI** that runs on Unix‑like terminals (Linux, macOS, WSL) without requiring ncurses expertise.
 
 ### Why a Pure Black (`#000000`) Theme?

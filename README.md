@@ -181,3 +181,10 @@ lib/            logging, reporting, credentials
 tui/            terminal interface
 office/         the external-drive copy, deployed separately
 ```
+
+---
+
+## Internal use
+
+This is an internal tool, not a public release. It is not licensed for
+redistribution and comes with no warranty or support.
