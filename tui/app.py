@@ -2553,7 +2553,8 @@ SETTING_SECTIONS: list[tuple[str, list[SettingField]]] = [
     ]),
     ("Notifications", [
         SettingField("TELEGRAM_ENABLED", "Telegram messages", "switch"),
-        SettingField("TELEGRAM_CHAT_ID", "Telegram chat ID"),
+        SettingField("TELEGRAM_CHAT_ID",
+                     "Telegram chat IDs (comma-separated for several)"),
         SettingField("EMAIL_ENABLED", "Email alerts", "switch"),
         SettingField("EMAIL_SMTP_HOST", "Email server"),
         SettingField("EMAIL_SMTP_PORT", "Email server port", "number",
