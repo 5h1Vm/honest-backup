@@ -111,17 +111,36 @@ def settings(conf: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def rclone_path() -> str:
+    """The rclone to use: one shipped beside this script wins over the system.
+
+    That is what makes the drive portable — carry rclone on the drive and it
+    runs on a machine that has never heard of it.
+    """
+    local = SCRIPT_DIR / ("rclone.exe" if os.name == "nt" else "rclone")
+    if local.exists() and os.access(local, os.X_OK):
+        return str(local)
     found = shutil.which("rclone")
     if not found:
         die("rclone is not installed, or not on PATH.\n"
-            "    Windows:  winget install Rclone.Rclone\n"
+            "    Linux:    sudo apt install rclone\n"
             "    macOS:    brew install rclone\n"
-            "    Linux:    sudo apt install rclone")
+            "    Windows:  winget install Rclone.Rclone\n"
+            "  Or put the rclone binary next to this script to carry it along.")
     return found
 
 
+def rclone_config_args() -> list[str]:
+    """Use an rclone.conf beside this script if there is one.
+
+    Keeps the remote definition on the drive rather than in whichever
+    account happens to be logged in.
+    """
+    local = SCRIPT_DIR / "rclone.conf"
+    return ["--config", str(local)] if local.exists() else []
+
+
 def rclone(args: list[str], capture=True) -> str:
-    cmd = [rclone_path()] + args
+    cmd = [rclone_path()] + rclone_config_args() + args
     result = subprocess.run(
         cmd,
         text=True,
