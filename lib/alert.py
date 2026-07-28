@@ -17,9 +17,12 @@ def send_email_alert(subject, body):
     return send_email_report(subject, body, attachment_path=None)
 
 
-def send_email_report(subject, body, attachment_path=None):
-    """
-    Send an email report, optionally with an attachment.
+def send_email_report(subject, body, attachment_path=None, html_body=None,
+                      attachments=None):
+    """Send an email report, optionally with attachments.
+
+    When html_body is given the message is multipart/alternative: clients that
+    render HTML show that, and anything else falls back to `body`.
     Returns True on success, False on failure.
     """
     config = get_config()
@@ -40,18 +43,31 @@ def send_email_report(subject, body, attachment_path=None):
         if not username or not password:
             raise ValueError("EMAIL_USERNAME or EMAIL_PASSWORD not set in KeePass")
 
-        msg = MIMEMultipart()
+        msg = MIMEMultipart('mixed')
         msg['From'] = from_addr
         msg['To'] = ", ".join(to_addrs)
         msg['Subject'] = subject
 
-        msg.attach(MIMEText(body, 'plain'))
+        if html_body:
+            # The plain part must come first: clients pick the last part they
+            # can render, so HTML has to be the later alternative.
+            alternative = MIMEMultipart('alternative')
+            alternative.attach(MIMEText(body, 'plain', 'utf-8'))
+            alternative.attach(MIMEText(html_body, 'html', 'utf-8'))
+            msg.attach(alternative)
+        else:
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
-        if attachment_path and os.path.isfile(attachment_path):
-            with open(attachment_path, 'rb') as f:
-                part = MIMEApplication(f.read(), Name=os.path.basename(attachment_path))
-            # After the file is closed
-            part['Content-Disposition'] = f'attachment; filename="{os.path.basename(attachment_path)}"'
+        wanted = list(attachments or [])
+        if attachment_path:
+            wanted.append(attachment_path)
+        for path in wanted:
+            if not path or not os.path.isfile(path):
+                continue
+            name = os.path.basename(path)
+            with open(path, 'rb') as f:
+                part = MIMEApplication(f.read(), Name=name)
+            part['Content-Disposition'] = f'attachment; filename="{name}"'
             msg.attach(part)
 
         context = ssl.create_default_context()

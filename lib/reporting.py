@@ -19,6 +19,15 @@ STATUS_MARK = {
 }
 
 
+def human_size(num_bytes) -> str:
+    size = float(num_bytes or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
 def collector_summary(report_data: dict, config: dict) -> list:
     """One line per collector: status, what was collected, what broke.
 
@@ -97,6 +106,9 @@ EXPECTED_LIMITS = (
     "unavailable: 400",
     "not supported",
     "does not support account owned tokens",
+    "account owned tokens",
+    "page rule",
+    "rate_limits",
     "deprecated",
     "410",
     "no sites could be listed",
@@ -166,6 +178,96 @@ def real_problems(entry: dict) -> list:
     """Errors and warnings that are genuinely worth someone's attention."""
     _, unexpected = split_warnings(entry)
     return list(entry.get("errors", [])) + unexpected
+
+
+# ---------------------------------------------------------------------------
+# Severity
+# ---------------------------------------------------------------------------
+# A dead credential is the one failure that silently stops everything and
+# never fixes itself, so it outranks every other kind of problem and is
+# named explicitly rather than buried in a list of warnings.
+CREDENTIAL_MARKERS = (
+    "invalid_client",
+    "invalid_grant",
+    "unauthorized_client",
+    "aadsts7000215",          # wrong client secret
+    "aadsts700016",           # application not found in directory
+    "aadsts50034",
+    "aadsts900023",           # tenant not found
+    "client secret",
+    "secret is expired",
+    "key is expired",
+    "certificate has expired",
+    "401",
+    "unauthorized",
+    "authentication failed",
+    "invalid api token",
+    "invalid access token",
+    "bad_credentials",
+    "token is invalid",
+    "token expired",
+    "could not authenticate",
+    "permission denied",
+    "access denied",
+    "no token",
+    "not set in keepass",
+    "keepass",
+)
+
+CRITICAL = "CRITICAL"
+WARNING = "WARNING"
+OK = "OK"
+
+
+def is_credential_failure(message: str) -> bool:
+    """Does this failure mean a key, secret or certificate stopped working?"""
+    text = str(message).lower()
+    if is_expected_limit(text) and not any(
+        marker in text for marker in
+        ("invalid_client", "aadsts", "secret", "keepass", "token")
+    ):
+        return False
+    return any(marker in text for marker in CREDENTIAL_MARKERS)
+
+
+def credential_failures(summary: list) -> list:
+    """Every credential problem across the run, in plain words."""
+    found = []
+    for entry in summary:
+        for message in real_problems(entry):
+            if is_credential_failure(message):
+                line = f"{entry['label']}: {plain(message)}"
+                if line not in found:
+                    found.append(line)
+    return found
+
+
+def severity(summary: list) -> str:
+    """CRITICAL, WARNING or OK.
+
+    Licence limits never move this. A run that collected everything the
+    tenant is entitled to is a green run, however many things the licence
+    does not cover.
+    """
+    active = [e for e in summary if e["status"] not in ("disabled", "skipped")]
+    if not active:
+        return WARNING
+    if credential_failures(summary):
+        return CRITICAL
+    if not any(e["records"] for e in active):
+        return CRITICAL
+    if any(e["status"] == "failed" for e in active):
+        return CRITICAL
+    if any(real_problems(e) for e in active):
+        return WARNING
+    return OK
+
+
+SEVERITY_STYLE = {
+    CRITICAL: ("#c0392b", "#fdecea", "CRITICAL", "\u274c"),
+    WARNING:  ("#b7791f", "#fffbea", "ATTENTION", "\u26a0\ufe0f"),
+    OK:       ("#1e7e34", "#eaf7ee", "ALL GOOD", "\u2705"),
+}
 
 
 def overall_status(summary: list) -> str:
@@ -331,11 +433,27 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
     started = report_data.get('started_at', 'unknown')
     # Use just the date part for a cleaner subject
     date_part = started.split('T')[0] if 'T' in started else started
-    subject = f"[HonestBackup] {status} - {date_part}"
+    level = severity(summary)
+    tag = {CRITICAL: "CRITICAL", WARNING: "ATTENTION", OK: "OK"}[level]
+    subject = f"[HonestBackup] {tag} - {status.title()} - {date_part}"
 
-    # Send email with the log file as attachment
-    email_body = text_report  # You could also include a short summary here
-    send_email_report(subject, email_body, attachment_path=str(log_file_path))
+    # A Markdown copy lives beside the JSON report, and rides along with the
+    # email so the run is readable long after the mailbox is archived.
+    markdown_path = workspace_dir / f"backup-report-{date_part}.md"
+    try:
+        markdown_path.write_text(build_markdown(report_data, summary),
+                                 encoding="utf-8")
+    except OSError as exc:
+        print(f"[reporting] could not write {markdown_path}: {exc}", flush=True)
+        markdown_path = None
+
+    send_email_report(
+        subject,
+        text_report,
+        html_body=build_html(report_data, summary),
+        attachments=[str(log_file_path)] + (
+            [str(markdown_path)] if markdown_path else []),
+    )
 
     # Send Telegram notifications
     try:
@@ -435,3 +553,176 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
     except Exception as e:
         # Don't let telegram failures break the function; just log
         print(f"[reporting] Failed to send Telegram notifications: {e}", flush=True)
+
+# ---------------------------------------------------------------------------
+# The report, in two shapes
+# ---------------------------------------------------------------------------
+def _facts(report_data: dict, summary: list) -> dict:
+    archive = report_data.get("archive", {}) or {}
+    started = str(report_data.get("started_at", ""))
+    active = [e for e in summary if e["status"] not in ("disabled", "skipped")]
+
+    limits = []
+    for entry in summary:
+        expected, _ = split_warnings(entry)
+        limits.extend(summarise_limits(expected))
+
+    problems = []
+    for entry in active:
+        for message in real_problems(entry):
+            if not is_credential_failure(message):
+                line = f"{entry['label']}: {plain(message)}"
+                if line not in problems:
+                    problems.append(line)
+
+    return {
+        "date": started.split("T")[0] if "T" in started else started or "today",
+        "time": started.split("T")[1][:5] if "T" in started else "",
+        "severity": severity(summary),
+        "status": overall_status(summary),
+        "records": sum(e["records"] for e in active),
+        "collected": active,
+        "credentials": credential_failures(summary),
+        "problems": problems,
+        "limits": sorted(set(limits)),
+        "archive": archive,
+    }
+
+
+def build_markdown(report_data: dict, summary: list) -> str:
+    """The report as Markdown — attached to the email and kept on disk."""
+    f = _facts(report_data, summary)
+    _, _, label, icon = SEVERITY_STYLE[f["severity"]]
+    out = [
+        f"# Backup report - {f['date']}",
+        "",
+        f"**{icon} {label}** - {f['status'].title()}",
+        "",
+        f"- Records collected: **{f['records']:,}**",
+    ]
+    archive = f["archive"]
+    if archive.get("size"):
+        out.append(f"- Archive size: **{human_size(archive['size'])}**")
+    if archive.get("uploaded_to"):
+        out.append(f"- Stored in: {', '.join(archive['uploaded_to'])}")
+    out.append("")
+
+    if f["credentials"]:
+        out += ["## Credentials needing attention", "",
+                "These stop collection entirely and will not fix themselves.", ""]
+        out += [f"- {line}" for line in f["credentials"]] + [""]
+
+    if f["problems"]:
+        out += ["## Problems", ""] + [f"- {line}" for line in f["problems"]] + [""]
+
+    out += ["## What was collected", "",
+            "| Service | Records | Datasets | Result |",
+            "|---|---:|---:|---|"]
+    for entry in f["collected"]:
+        out.append(f"| {entry['label']} | {entry['records']:,} | "
+                   f"{entry.get('datasets', 0)} | {entry['status']} |")
+    out.append("")
+
+    if f["limits"]:
+        out += ["## Not collected - licence or plan limits", "",
+                "Expected, and not a fault. The tenant's licences do not "
+                "cover these.", ""]
+        out += [f"- {line}" for line in f["limits"]] + [""]
+
+    return "\n".join(out)
+
+
+def build_html(report_data: dict, summary: list) -> str:
+    """The email body. One column, large text, readable on a phone."""
+    f = _facts(report_data, summary)
+    colour, tint, label, icon = SEVERITY_STYLE[f["severity"]]
+    archive = f["archive"]
+
+    def esc(text):
+        return (str(text).replace("&", "&amp;")
+                .replace("<", "&lt;").replace(">", "&gt;"))
+
+    def section(title, lines, accent, note=None):
+        if not lines:
+            return ""
+        items = "".join(
+            f'<tr><td style="padding:6px 0;border-bottom:1px solid #eee;'
+            f'font-size:15px;line-height:1.5;color:#222">{esc(line)}</td></tr>'
+            for line in lines
+        )
+        hint = (f'<p style="margin:0 0 10px;font-size:13px;color:#666">'
+                f'{esc(note)}</p>') if note else ""
+        return (
+            f'<h2 style="margin:26px 0 8px;font-size:16px;color:{accent};'
+            f'font-weight:600">{esc(title)}</h2>{hint}'
+            f'<table role="presentation" width="100%" cellpadding="0" '
+            f'cellspacing="0">{items}</table>'
+        )
+
+    rows = "".join(
+        f'<tr>'
+        f'<td style="padding:10px 0;border-bottom:1px solid #eee;font-size:15px;'
+        f'color:#222">{esc(e["label"])}</td>'
+        f'<td align="right" style="padding:10px 0;border-bottom:1px solid #eee;'
+        f'font-size:15px;color:#222;white-space:nowrap"><b>{e["records"]:,}</b>'
+        f'<span style="color:#888"> in {e.get("datasets", 0)}</span></td>'
+        f'</tr>'
+        for e in f["collected"]
+    )
+
+    stored = ""
+    if archive.get("size") or archive.get("uploaded_to"):
+        bits = []
+        if archive.get("size"):
+            bits.append(human_size(archive["size"]))
+        if archive.get("uploaded_to"):
+            bits.append("stored in " + ", ".join(archive["uploaded_to"]))
+        stored = (f'<p style="margin:6px 0 0;font-size:14px;color:#666">'
+                  f'{esc(" - ".join(bits))}</p>')
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Backup report</title></head>
+<body style="margin:0;padding:0;background:#f4f5f7;
+ -webkit-font-smoothing:antialiased">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+ style="background:#f4f5f7"><tr><td align="center" style="padding:20px 12px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+ style="max-width:600px;background:#ffffff;border-radius:10px;
+ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">
+
+<tr><td style="background:{tint};border-left:5px solid {colour};
+ border-radius:10px 10px 0 0;padding:20px 22px">
+ <div style="font-size:13px;letter-spacing:.08em;color:{colour};
+  font-weight:700">{icon} {label}</div>
+ <div style="font-size:22px;color:#111;font-weight:600;margin-top:4px">
+  {esc(f['status'].title())}</div>
+ <div style="font-size:14px;color:#555;margin-top:2px">
+  {esc(f['date'])}{(' at ' + esc(f['time'])) if f['time'] else ''}</div>
+</td></tr>
+
+<tr><td style="padding:22px">
+ <div style="font-size:30px;font-weight:700;color:#111">{f['records']:,}</div>
+ <div style="font-size:14px;color:#666">records collected</div>
+ {stored}
+
+ {section("Credentials needing attention", f["credentials"], "#c0392b",
+          "These stop collection entirely and will not fix themselves.")}
+ {section("Problems", f["problems"], "#b7791f")}
+
+ <h2 style="margin:26px 0 8px;font-size:16px;color:#111;font-weight:600">
+  What was collected</h2>
+ <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+  {rows}</table>
+
+ {section("Not collected - licence or plan limits", f["limits"], "#666",
+          "Expected, and not a fault. Your licences do not cover these.")}
+</td></tr>
+
+<tr><td style="padding:16px 22px;border-top:1px solid #eee;
+ font-size:12px;color:#888;line-height:1.6">
+ HonestBackup - the full log and a Markdown copy of this report are attached.
+</td></tr>
+
+</table></td></tr></table></body></html>"""
