@@ -60,10 +60,11 @@ echo
 # the scripts
 # ---------------------------------------------------------------------------
 mkdir -p "$TOOL" || die "could not create $TOOL"
-for f in pull.py reseed.py copy-now.sh pull.conf.example README.md; do
+for f in pull.py view.py reseed.py copy-now.sh get-tools.sh \
+         HonestBackup.command pull.conf.example README.md; do
     cp "$HERE/$f" "$TOOL/" || die "could not copy $f"
 done
-chmod +x "$TOOL"/*.sh "$TOOL"/*.py 2>/dev/null
+chmod +x "$TOOL"/*.sh "$TOOL"/*.py "$TOOL"/*.command 2>/dev/null
 ok "scripts copied to $TOOL"
 
 # ---------------------------------------------------------------------------
@@ -71,11 +72,18 @@ ok "scripts copied to $TOOL"
 # ---------------------------------------------------------------------------
 SYSTEM_RCLONE="$(command -v rclone || true)"
 if [[ -n "$SYSTEM_RCLONE" ]]; then
-    cp "$SYSTEM_RCLONE" "$TOOL/rclone" && chmod +x "$TOOL/rclone"
-    ok "rclone carried along ($("$TOOL/rclone" version | head -1))"
+    mkdir -p "$TOOL/tools"
+    cp "$SYSTEM_RCLONE" "$TOOL/tools/rclone" && chmod +x "$TOOL/tools/rclone"
+    ok "rclone carried along ($("$TOOL/tools/rclone" version | head -1))"
 else
     warn "no rclone to copy — the drive will need one on the machine it is used on"
 fi
+
+# That rclone only runs on machines like this one. For a drive that also
+# has to open on the office Mac, get-tools.sh fetches a binary per
+# platform; say so rather than letting it fail there.
+echo "  ${DIM}For a drive that must also work on macOS:${OFF}"
+echo "  ${DIM}  $TOOL/get-tools.sh --all${OFF}"
 
 # ---------------------------------------------------------------------------
 # the remote definition
@@ -157,5 +165,15 @@ echo "${BOLD}Done${OFF}"
 echo "  Plug this drive into any Linux machine with Python and double-click"
 echo "  ${DIM}Copy backups to this drive${OFF} at the top of it."
 echo
+echo "  On a Mac, double-click ${DIM}HonestBackup/HonestBackup.command${OFF}"
+echo "  ${DIM}— it offers to fetch what it needs onto the drive, and installs"
+echo "  nothing on the Mac itself.${OFF}"
+echo
 echo "  Or from a terminal:  $TOOL/copy-now.sh"
+echo
+echo "  ${DIM}To read the backups on the drive rather than only carry them,"
+echo "  the private key has to travel too:${OFF}"
+echo "      $TOOL/get-tools.sh --with-key"
+echo "  ${DIM}That makes a lost drive a readable copy of everything. Only do"
+echo "  it for a drive that stays locked away.${OFF}"
 echo

@@ -91,7 +91,10 @@ Thumbs.db
 # REPOSITORY Browser Profile
 # =========================
 
-honestbackup-profile/
+# Every spelling: a browser profile holds live session cookies,
+# and a renamed one (honestbackup-profile.old) slipped past a
+# pattern that only matched the exact directory name.
+honestbackup-profile*
 honestbackup-profile.tar.gz
 # =========================
 # Virtual Environments
@@ -149,3 +152,14 @@ backupvault/
 *.pfx
 .env.*
 !.env.example
+
+# =========================
+# Office drive
+# =========================
+# Binaries fetched onto a drive by get-tools.sh, and anything the viewer
+# writes out. None of it belongs in the repository — the tools are large,
+# platform-specific, and downloaded on demand.
+office/tools/
+office/keys/
+office/restored/
+office/pull.conf

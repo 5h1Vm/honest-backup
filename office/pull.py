@@ -110,15 +110,31 @@ def settings(conf: dict) -> dict:
 # rclone
 # ---------------------------------------------------------------------------
 
+def platform_tag() -> str:
+    """e.g. darwin-arm64 — how get-tools.sh labels the binaries it fetches."""
+    system = {"Darwin": "darwin", "Linux": "linux"}.get(
+        platform.system(), platform.system().lower())
+    machine = {"x86_64": "amd64", "amd64": "amd64",
+               "arm64": "arm64", "aarch64": "arm64"}.get(
+                   platform.machine().lower(), platform.machine().lower())
+    return f"{system}-{machine}"
+
+
 def rclone_path() -> str:
     """The rclone to use: one shipped beside this script wins over the system.
 
     That is what makes the drive portable — carry rclone on the drive and it
-    runs on a machine that has never heard of it.
+    runs on a machine that has never heard of it. A drive prepared for
+    several machines holds one binary each, tagged by platform, so the
+    tagged one is tried first: otherwise a drive filled on Linux hands a
+    Mac a Linux binary.
     """
-    local = SCRIPT_DIR / ("rclone.exe" if os.name == "nt" else "rclone")
-    if local.exists() and os.access(local, os.X_OK):
-        return str(local)
+    suffix = ".exe" if os.name == "nt" else ""
+    for folder in (SCRIPT_DIR / "tools", SCRIPT_DIR):
+        for name in (f"rclone-{platform_tag()}{suffix}", f"rclone{suffix}"):
+            local = folder / name
+            if local.exists() and os.access(local, os.X_OK):
+                return str(local)
     found = shutil.which("rclone")
     if not found:
         die("rclone is not installed, or not on PATH.\n"
