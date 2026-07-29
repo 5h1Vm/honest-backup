@@ -126,8 +126,11 @@ def repository_root() -> Path:
                 root = Path(value.strip()).expanduser()
                 if (root / "archives").is_dir():
                     return root
-    # Failing that, look where the drive layout puts it relative to here.
-    for candidate in (SCRIPT_DIR.parent, SCRIPT_DIR, Path.cwd()):
+    # Failing that, look where the drive layout puts it relative to here:
+    # HonestBackup/Backups/archives normally, or archives loose beside
+    # this script on an older or hand-built drive.
+    for candidate in (SCRIPT_DIR / "Backups", SCRIPT_DIR,
+                      SCRIPT_DIR.parent, Path.cwd()):
         if (candidate / "archives").is_dir():
             return candidate
     die("No archives folder found.\n"

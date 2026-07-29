@@ -41,6 +41,12 @@ NO_CREDS=false
 [[ -w "$DRIVE" ]] || die "$DRIVE is not writable by $USER."
 
 TOOL="$DRIVE/HonestBackup"
+# The backups themselves live one level inside the HonestBackup folder,
+# not loose at the drive's root — a drive is Finder-browsed as often as
+# it is scripted, and archives/hashes/manifests/reports/metadata sitting
+# next to volume icons and the scripts is not what "easy to navigate"
+# looks like. One folder in, everything has a place.
+DATA="$TOOL/Backups"
 
 # Run under sudo, $HOME is /root and the rclone config is not there. Work out
 # who actually owns the session so the config is found and the files end up
@@ -59,13 +65,25 @@ echo
 # ---------------------------------------------------------------------------
 # the scripts
 # ---------------------------------------------------------------------------
-mkdir -p "$TOOL" || die "could not create $TOOL"
+mkdir -p "$TOOL" "$DATA" || die "could not create $TOOL"
 for f in pull.py view.py reseed.py copy-now.sh get-tools.sh \
          HonestBackup.command pull.conf.example README.md; do
     cp "$HERE/$f" "$TOOL/" || die "could not copy $f"
 done
 chmod +x "$TOOL"/*.sh "$TOOL"/*.py "$TOOL"/*.command 2>/dev/null
 ok "scripts copied to $TOOL"
+
+# A launcher at the very top of the drive too, so opening it in Finder
+# shows something to double-click immediately rather than a folder to go
+# digging in first. It is a two-line stub, not a second copy of the real
+# script — the real one stays inside HonestBackup/, where it can find
+# pull.py and tools/ beside it.
+cat > "$DRIVE/HonestBackup.command" <<'STUB'
+#!/bin/bash
+cd "$(dirname "${BASH_SOURCE[0]}")/HonestBackup" && exec ./HonestBackup.command
+STUB
+chmod +x "$DRIVE/HonestBackup.command"
+ok "double-click launcher placed at the top of the drive"
 
 # ---------------------------------------------------------------------------
 # rclone, so the drive does not depend on the machine having it
@@ -118,21 +136,41 @@ fi
 if [[ -f "$TOOL/pull.conf" ]]; then
     ok "pull.conf already there, left alone — currently:"
     grep -E "^(REMOTE|DESTINATION)=" "$TOOL/pull.conf" | sed 's/^/      /'
-    if grep -qE "^REMOTE=backblaze:your-bucket" "$TOOL/pull.conf"; then
-        warn "REMOTE is still the example value — edit $TOOL/pull.conf"
-    fi
-    if ! grep -qE "^DESTINATION=$DRIVE\$" "$TOOL/pull.conf"; then
-        warn "DESTINATION does not point at this drive — edit $TOOL/pull.conf"
+    if ! grep -qE "^DESTINATION=$DATA\$" "$TOOL/pull.conf"; then
+        warn "DESTINATION does not point at $DATA — edit $TOOL/pull.conf"
     fi
 else
-    sed -e "s|^DESTINATION=.*|DESTINATION=$DRIVE|" \
+    sed -e "s|^DESTINATION=.*|DESTINATION=$DATA|" \
         "$HERE/pull.conf.example" > "$TOOL/pull.conf"
-    if [[ -f "$HERE/pull.conf" ]]; then
+    # Take the remote from a pull.conf sitting next to this script, and
+    # failing that from the only remote rclone knows about — a drive that
+    # ships pointing at "your-bucket" copies nothing and explains nothing.
+    REMOTE_LINE=""
+    [[ -f "$HERE/pull.conf" ]] && \
         REMOTE_LINE=$(grep -E "^\s*REMOTE\s*=" "$HERE/pull.conf" | head -1)
-        [[ -n "$REMOTE_LINE" ]] && sed -i "s|^REMOTE=.*|$REMOTE_LINE|" "$TOOL/pull.conf"
+    if [[ -z "$REMOTE_LINE" ]]; then
+        ONLY_REMOTE=$(rclone listremotes 2>/dev/null | head -2)
+        if [[ "$(wc -l <<<"$ONLY_REMOTE")" -eq 1 && -n "$ONLY_REMOTE" ]]; then
+            REMOTE_LINE="REMOTE=${ONLY_REMOTE}"
+        fi
     fi
-    ok "pull.conf created, pointing at $DRIVE"
+    [[ -n "$REMOTE_LINE" ]] && \
+        sed -i "s|^REMOTE=.*|$REMOTE_LINE|" "$TOOL/pull.conf"
+    # STATUS_REMOTE is a separate line from REMOTE, so setting REMOTE above
+    # does not touch it — left at an example value it fails silently at
+    # the very end of every pull, after everything real already worked.
+    sed -i "s|^STATUS_REMOTE=.*|STATUS_REMOTE=|" "$TOOL/pull.conf"
+    ok "pull.conf created, pointing at $DATA"
     grep -E "^(REMOTE|DESTINATION)=" "$TOOL/pull.conf" | sed 's/^/      /'
+fi
+
+# Whichever branch got here, a remote nobody has set is the single most
+# likely reason the drive stays empty, so it is checked once at the end.
+if grep -qE "^REMOTE=(backblaze:your-bucket)?$|^REMOTE=$" "$TOOL/pull.conf" \
+   || grep -qE "^REMOTE=[^:]*:$" "$TOOL/pull.conf"; then
+    warn "REMOTE is not set to a bucket yet — nothing will copy until it is"
+    echo "        edit $TOOL/pull.conf and set, for example:"
+    echo "          REMOTE=backblaze:honestbackup"
 fi
 
 # ---------------------------------------------------------------------------
@@ -165,9 +203,9 @@ echo "${BOLD}Done${OFF}"
 echo "  Plug this drive into any Linux machine with Python and double-click"
 echo "  ${DIM}Copy backups to this drive${OFF} at the top of it."
 echo
-echo "  On a Mac, double-click ${DIM}HonestBackup/HonestBackup.command${OFF}"
-echo "  ${DIM}— it offers to fetch what it needs onto the drive, and installs"
-echo "  nothing on the Mac itself.${OFF}"
+echo "  On a Mac, double-click ${DIM}HonestBackup.command${OFF} at the top of"
+echo "  the drive ${DIM}— it offers to fetch what it needs onto the drive,"
+echo "  and installs nothing on the Mac itself.${OFF}"
 echo
 echo "  Or from a terminal:  $TOOL/copy-now.sh"
 echo

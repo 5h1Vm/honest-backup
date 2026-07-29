@@ -30,8 +30,10 @@ VERIFY=true
 # interface can show whether the office copy is up to date.
 PUBLISH_STATUS=true
 
-# Where that status file goes. Defaults to <REMOTE>/status.
-STATUS_REMOTE=backblaze:your-bucket/status
+# Where that status file goes. Leave blank to use <REMOTE>/status —
+# writing an actual value here means it stops following REMOTE if that is
+# ever changed, which is normally not what you want.
+STATUS_REMOTE=
 
 # A name for this drive, used in the status file. Defaults to the computer
 # name. Set it if you ever run more than one office copy.

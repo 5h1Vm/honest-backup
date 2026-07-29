@@ -304,6 +304,55 @@ def copy_down(config: dict, dry_run: bool) -> None:
             raise
 
 
+FOLDER_README = """\
+What is in this folder
+=======================
+
+This is the office copy of the HonestBackup archives, brought down from
+the cloud. It is a plain copy — nothing here needs HonestBackup installed
+to exist safely, only to be read.
+
+  archives/    The actual backups. One file per backup run, encrypted —
+               opening one directly shows scrambled bytes, which is
+               expected. Open the drive's HonestBackup.command (Mac) or
+               copy-now.sh (Linux) and choose "look inside" instead.
+
+  hashes/      A short fingerprint for each archive. Used to prove an
+               archive has not been damaged or altered since it was made.
+
+  manifests/   A list of what each backup contains — which service, which
+               data, how many records — without opening the archive.
+
+  reports/     A plain-language summary of each backup run: what worked,
+               what did not, what needs attention.
+
+  metadata/    Extra details about each run, used by the tools rather than
+               read directly.
+
+Nothing in this folder is ever deleted by these tools, even after a
+backup ages out of the cloud. If a folder here holds something the cloud
+no longer does, that is normal — it means this drive is now the only
+copy, which is exactly the point of keeping one.
+"""
+
+
+def write_folder_readme(destination: Path) -> None:
+    """Leave a plain-English explanation next to the data itself.
+
+    Anyone who plugs this drive into an unfamiliar machine, or opens it
+    five years from now, should be able to make sense of it without
+    reaching for documentation that lives somewhere else.
+    """
+    readme = destination / "README.txt"
+    if readme.exists():
+        return
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        readme.write_text(FOLDER_README, encoding="utf-8")
+    except OSError:
+        pass  # a missing README never stops a backup from being copied
+
+
 def publish_status(config: dict, status: dict) -> None:
     """Put the status file back in the cloud so the server can see it."""
     target = config["status_remote"]
@@ -335,6 +384,9 @@ def run(args) -> int:
     root = destination if destination.exists() else destination.parent
     if not root.exists():
         die(f"{destination} is not reachable. Is the drive plugged in?")
+
+    if not args.status:
+        write_folder_readme(destination)
 
     say()
     say(f"  HonestBackup — office copy")
