@@ -1,3 +1,4 @@
+import html
 import json
 import os
 from pathlib import Path
@@ -457,6 +458,14 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
 
     # Send Telegram notifications
     try:
+        # Telegram parses the message as HTML, so any < > & that arrives from a
+        # collector — a Playwright error saying "<launching> chrome" is the one
+        # that bit us — is read as a tag and the whole message is rejected with
+        # a 400. Everything interpolated below goes through esc() first; only
+        # the <b> tags written here are meant to be markup.
+        def esc(value):
+            return html.escape(str(value), quote=False)
+
         icon = {
             "COMPLETED": "✅",
             "COMPLETED WITH ISSUES": "⚠️",
@@ -471,7 +480,7 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
             "Backup complete — with issues"
             if status == "COMPLETED WITH ISSUES" else f"Backup {status.lower()}"
         )
-        parts = [f"{icon} <b>{headline}</b>", date_part, ""]
+        parts = [f"{icon} <b>{esc(headline)}</b>", esc(date_part), ""]
 
         # --- what we got -------------------------------------------------
         parts.append("<b>Backed up</b>")
@@ -481,7 +490,7 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
             if not entry["records"]:
                 continue
             parts.append(
-                f"• {entry['label']} — {entry['records']:,} records "
+                f"• {esc(entry['label'])} — {entry['records']:,} records "
                 f"({entry['datasets']} datasets)"
             )
 
@@ -489,16 +498,17 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
         not_collected = []
         for entry in summary:
             if entry["status"] == "disabled":
-                not_collected.append(f"• {entry['label']} — turned off")
+                not_collected.append(f"• {esc(entry['label'])} — turned off")
                 continue
             if entry["status"] == "skipped":
                 not_collected.append(
-                    f"• {entry['label']} — {entry.get('detail', 'not due yet')}"
+                    f"• {esc(entry['label'])} — "
+                    f"{esc(entry.get('detail', 'not due yet'))}"
                 )
                 continue
             expected, _ = split_warnings(entry)
             for line in summarise_limits(expected)[:6]:
-                not_collected.append(f"• {line}")
+                not_collected.append(f"• {esc(line)}")
 
         if not_collected:
             parts.append("")
@@ -509,14 +519,18 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
         problems = []
         for entry in summary:
             for line in summarise_limits(real_problems(entry))[:4]:
-                problems.append(f"• {line}")
+                problems.append(f"• {esc(line)}")
             broken = [
                 name for name, state in entry["stages"].items()
                 if state != "ok"
             ]
             for name in broken[:3]:
+                # Stage errors can be a whole stack trace. One line of it is
+                # all a phone notification can carry; the rest is in the log
+                # file that follows.
+                detail = " ".join(str(entry["stages"][name]).split())[:120]
                 problems.append(
-                    f"• {entry['label']}: {name} — {entry['stages'][name][:90]}"
+                    f"• {esc(entry['label'])}: {esc(name)} — {esc(detail)}"
                 )
 
         if problems:
@@ -528,28 +542,22 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
         parts.append(f"<b>Total:</b> {total_records:,} records")
         if archive.get("size"):
             parts.append(
-                f"<b>Archive:</b> {archive.get('backup_id', '?')} "
+                f"<b>Archive:</b> {esc(archive.get('backup_id', '?'))} "
                 f"({archive['size'] / 1048576:.1f} MB)"
             )
         uploaded = archive.get("uploaded_to")
         if isinstance(uploaded, list) and uploaded:
-            parts.append(f"<b>Stored:</b> {', '.join(uploaded)}")
+            parts.append(f"<b>Stored:</b> {esc(', '.join(map(str, uploaded)))}")
 
+        # Telegram is the glance: did it run, what came in, what needs a look.
+        # The full report and the log go by email, where there is room to read
+        # them. Only a failed run drags the log along here, because that is
+        # the one time you want it before you reach a desk.
         send_telegram_alert("\n".join(parts))
 
-        # Send the log file as a document
-        send_telegram_document(str(log_file_path), caption="HonestBackup log file")
-
-        # Send the report as a text document
-        report_path = workspace_dir / "backup_report.txt"
-        with open(report_path, 'w') as f:
-            f.write(text_report)
-        send_telegram_document(str(report_path), caption="HonestBackup report")
-        # Clean up the temporary report file
-        try:
-            report_path.unlink()
-        except Exception:
-            pass
+        if status == "FAILED":
+            send_telegram_document(str(log_file_path),
+                                   caption="HonestBackup log — run failed")
     except Exception as e:
         # Don't let telegram failures break the function; just log
         print(f"[reporting] Failed to send Telegram notifications: {e}", flush=True)

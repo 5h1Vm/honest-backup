@@ -459,6 +459,49 @@ def time_row(service: str, index: int, value: str) -> Horizontal:
     )
 
 
+def split_list(raw: str) -> list[str]:
+    """A comma-separated setting as a list, in order, without duplicates."""
+    seen: list[str] = []
+    for piece in str(raw).replace(";", ",").split(","):
+        piece = piece.strip()
+        if piece and piece not in seen:
+            seen.append(piece)
+    return seen
+
+
+def recipient_row(kind: str, value: str, placeholder: str) -> Horizontal:
+    """One address or chat id, with a button to remove it.
+
+    Same shape as time_row: the id carries a counter rather than a position,
+    so deleting one from the middle cannot leave two sharing an id.
+    """
+    stamp = next(_TIME_ROW_SEQUENCE)
+    return Horizontal(
+        Input(
+            value=value,
+            placeholder=placeholder,
+            classes=f"recipient-input r-{kind}",
+        ),
+        Button("✕", classes=f"remove-time rm-{kind}",
+               id=f"delrecip-{kind}-{stamp}"),
+        classes="recipient-cell",
+    )
+
+
+def looks_like_email(text: str) -> bool:
+    """Enough of a check to catch a typo, not a standards-compliant parser."""
+    if text.count("@") != 1 or any(c.isspace() for c in text):
+        return False
+    local, _, domain = text.partition("@")
+    return bool(local) and "." in domain and not domain.startswith(".") \
+        and not domain.endswith(".")
+
+
+def looks_like_chat_id(text: str) -> bool:
+    """Telegram ids are numbers; group and channel ids start with a minus."""
+    return text.lstrip("-").isdigit() and text not in ("-", "")
+
+
 def next_backup_text() -> str:
     """When the next automatic backup will happen, in words."""
     from orchestrator import cron as cron_mod
@@ -673,6 +716,7 @@ MENU_ITEMS: list[tuple[str, str, str]] = [
     ("logs", "Logs & reports", "Read what happened during past backup runs"),
     ("browse", "Read backed-up data", "Open restored files — JSON shown in a clean viewer"),
     ("schedule", "Scheduling", "Choose what gets backed up, and how often"),
+    ("recipients", "Who gets told", "Email addresses and Telegram chats for reports"),
     ("settings", "Settings", "Storage, notifications and other options"),
     ("credentials", "API keys & passwords", "Add or change the credentials the backup uses"),
     ("keys", "Encryption keys", "View or replace the keys that lock your backups"),
@@ -804,6 +848,8 @@ class HomeScreen(NavScreen):
             app.push_screen(ActivityScreen())
         elif item_id == "schedule":
             app.push_screen(ScheduleScreen())
+        elif item_id == "recipients":
+            app.push_screen(RecipientsScreen())
         elif item_id == "restore":
             app.push_screen(RestoreWizardScreen(), app.restore_confirmed)
         elif item_id == "logs":
@@ -1993,6 +2039,248 @@ class ScheduleScreen(NavScreen):
 
 
 # ======================================================================
+# Recipients
+# ======================================================================
+class RecipientsScreen(NavScreen):
+    """Who hears about a backup run, and by which channel.
+
+    The two channels carry different things on purpose: Telegram gets a short
+    summary you can read on a phone, email gets the full report with the log
+    attached. Both lists live in one setting each as comma-separated values,
+    so adding a person never means adding a setting.
+    """
+
+    BINDINGS = [Binding("escape", "back", "Back", priority=True)]
+
+    def compose(self) -> ComposeResult:
+        cfg = read_kv_file(CONF_PATH)
+        yield TitleBar("Who gets told")
+        with VerticalScroll(id="recipients-body"):
+            yield Static(
+                f"\n[b {CYAN}]Email — the full report[/]\n"
+                f"[{MUTED}]Every run, in detail: what came in, what did not, "
+                f"and why. The log file rides along as an attachment.[/]\n"
+            )
+            with Horizontal(classes="schedule-row"):
+                yield Switch(
+                    value=cfg.get("EMAIL_ENABLED", "false").lower() == "true",
+                    id="recip-email-on",
+                )
+                yield Static(
+                    f"[b {WHITE}]Send email reports[/]\n"
+                    f"[{MUTED}]needs EMAIL_USERNAME and EMAIL_PASSWORD in "
+                    f"API keys & passwords[/]",
+                    classes="schedule-name",
+                )
+            with Horizontal(classes="form-row"):
+                yield Label("From", classes="form-label")
+                yield Input(
+                    value=cfg.get("EMAIL_FROM", ""),
+                    placeholder="HonestBackup <alerts@example.com>",
+                    id="recip-email-from",
+                )
+            with Vertical(classes="recipient-list", id="list-email"):
+                for address in split_list(cfg.get("EMAIL_TO", "")):
+                    yield recipient_row("email", address, "name@example.com")
+            with Horizontal(classes="recipient-add-row"):
+                yield Button("+ Add an address", id="addrecip-email",
+                             classes="add-recipient")
+
+            yield Static(
+                f"\n[b {CYAN}]Telegram — the short version[/]\n"
+                f"[{MUTED}]A few lines you can read at a glance. The log is "
+                f"only attached when a run fails.[/]\n"
+            )
+            with Horizontal(classes="schedule-row"):
+                yield Switch(
+                    value=cfg.get("TELEGRAM_ENABLED", "false").lower() == "true",
+                    id="recip-telegram-on",
+                )
+                yield Static(
+                    f"[b {WHITE}]Send Telegram messages[/]\n"
+                    f"[{MUTED}]needs TELEGRAM_BOT_TOKEN in "
+                    f"API keys & passwords[/]",
+                    classes="schedule-name",
+                )
+            with Vertical(classes="recipient-list", id="list-telegram"):
+                for chat_id in split_list(cfg.get("TELEGRAM_CHAT_ID", "")):
+                    yield recipient_row("telegram", chat_id, "1072631622")
+            with Horizontal(classes="recipient-add-row"):
+                yield Button("+ Add a chat", id="addrecip-telegram",
+                             classes="add-recipient")
+            yield Static(
+                f"\n[{MUTED}]A chat id is a number. Message [b]@userinfobot[/] "
+                f"on Telegram to find yours; group and channel ids begin with "
+                f"a minus. Everyone listed must have started a chat with the "
+                f"bot at least once, or Telegram will not deliver to them.[/]\n"
+            )
+        with Horizontal(classes="button-row"):
+            yield Button("Save changes", id="recip-save", variant="success")
+            yield Button("Send a test", id="recip-test")
+            yield Button("← Back", id="recip-back", variant="primary")
+        yield hint_bar(
+            "↑ ↓ move between fields · Space flips a switch · "
+            "Enter presses a button · Esc back"
+        )
+
+    async def _add(self, kind: str, placeholder: str) -> None:
+        listing = self.query_one(f"#list-{kind}", Vertical)
+        if len(listing.query(f".r-{kind}")) >= 20:
+            self.notify("Twenty recipients is plenty.", title="Who gets told",
+                        severity="warning")
+            return
+        row = recipient_row(kind, "", placeholder)
+        # Await the mount: until it finishes the Input is not in the DOM, so
+        # focusing it would find nothing.
+        await listing.mount(row)
+        row.query_one(Input).focus()
+
+    @on(Button.Pressed, "#addrecip-email")
+    async def _add_email(self, event: Button.Pressed) -> None:
+        await self._add("email", "name@example.com")
+        event.stop()
+
+    @on(Button.Pressed, "#addrecip-telegram")
+    async def _add_telegram(self, event: Button.Pressed) -> None:
+        await self._add("telegram", "1072631622")
+        event.stop()
+
+    @on(Button.Pressed, ".remove-time")
+    def _remove(self, event: Button.Pressed) -> None:
+        event.button.parent.remove()
+        event.stop()
+
+    def _collect(self, kind: str) -> list[str]:
+        seen: list[str] = []
+        for box in self.query(f".r-{kind}").results(Input):
+            value = box.value.strip()
+            if value and value not in seen:
+                seen.append(value)
+        return seen
+
+    def _gather(self) -> dict[str, str] | None:
+        """Everything on screen, checked. None means something was wrong."""
+        addresses = self._collect("email")
+        chat_ids = self._collect("telegram")
+        email_on = self.query_one("#recip-email-on", Switch).value
+        telegram_on = self.query_one("#recip-telegram-on", Switch).value
+
+        for address in addresses:
+            if not looks_like_email(address):
+                self.notify(f"'{address}' does not look like an email address.",
+                            title="Who gets told", severity="error")
+                return None
+        for chat_id in chat_ids:
+            if not looks_like_chat_id(chat_id):
+                self.notify(
+                    f"'{chat_id}' is not a chat id. They are numbers — "
+                    f"message @userinfobot to find yours.",
+                    title="Who gets told", severity="error")
+                return None
+
+        # Switching a channel on with nobody to send to is a silent no-op at
+        # run time, so it is worth catching here instead.
+        if email_on and not addresses:
+            self.notify("Email is on, but nobody is listed to receive it.",
+                        title="Who gets told", severity="error")
+            return None
+        if telegram_on and not chat_ids:
+            self.notify("Telegram is on, but no chat is listed.",
+                        title="Who gets told", severity="error")
+            return None
+
+        return {
+            "EMAIL_ENABLED": "true" if email_on else "false",
+            "EMAIL_FROM": self.query_one("#recip-email-from", Input).value.strip(),
+            "EMAIL_TO": ",".join(addresses),
+            "TELEGRAM_ENABLED": "true" if telegram_on else "false",
+            "TELEGRAM_CHAT_ID": ",".join(chat_ids),
+        }
+
+    @on(Button.Pressed, "#recip-save")
+    def _save(self) -> None:
+        updates = self._gather()
+        if updates is None:
+            return
+        try:
+            save_conf_values(CONF_PATH, updates)
+        except OSError as exc:
+            self.notify(f"Could not save: {exc}", title="Who gets told",
+                        severity="error")
+            return
+        people = len(split_list(updates["EMAIL_TO"]))
+        chats = len(split_list(updates["TELEGRAM_CHAT_ID"]))
+        self.notify(
+            f"Saved. Reports go to {people} "
+            f"address{'es' if people != 1 else ''}, "
+            f"summaries to {chats} chat{'s' if chats != 1 else ''}.",
+            title="Who gets told",
+        )
+        self.app.pop_screen()
+
+    @on(Button.Pressed, "#recip-test")
+    def _test(self) -> None:
+        """Save first, then send to everyone listed and report who got it."""
+        updates = self._gather()
+        if updates is None:
+            return
+        try:
+            save_conf_values(CONF_PATH, updates)
+        except OSError as exc:
+            self.notify(f"Could not save: {exc}", title="Who gets told",
+                        severity="error")
+            return
+        self.notify("Sending…", title="Who gets told")
+        self._send_test()
+
+    @work(thread=True)
+    def _send_test(self) -> None:
+        from lib.alert import send_email_report, send_telegram_alert
+
+        cfg = read_kv_file(CONF_PATH)
+        results = []
+        if cfg.get("TELEGRAM_ENABLED", "false").lower() == "true":
+            ok = send_telegram_alert(
+                "✅ <b>HonestBackup test</b>\n"
+                "If you can read this, alerts reach this chat."
+            )
+            results.append(("Telegram", ok))
+        if cfg.get("EMAIL_ENABLED", "false").lower() == "true":
+            ok = send_email_report(
+                "[HonestBackup] Test message",
+                "If you can read this, reports reach this address.",
+            )
+            results.append(("Email", ok))
+
+        def report() -> None:
+            if not results:
+                self.notify("Both channels are switched off — nothing sent.",
+                            title="Who gets told", severity="warning")
+                return
+            failed = [name for name, ok in results if not ok]
+            if failed:
+                self.notify(
+                    f"{', '.join(failed)} did not go out. "
+                    f"Check the credentials in API keys & passwords.",
+                    title="Who gets told", severity="error", timeout=10,
+                )
+            else:
+                self.notify(
+                    f"{' and '.join(name for name, _ in results)} sent.",
+                    title="Who gets told",
+                )
+
+        self.app.call_from_thread(report)
+
+    @on(Button.Pressed, "#recip-back")
+    def _back_btn(self) -> None:
+        self.app.pop_screen()
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+
+# ======================================================================
 # Logs
 # ======================================================================
 class LogsScreen(NavScreen):
@@ -2551,16 +2839,14 @@ SETTING_SECTIONS: list[tuple[str, list[SettingField]]] = [
         SettingField("USB_LABEL", "USB drive label"),
         SettingField("USB_BACKUP_PATH", "Folder on the USB drive"),
     ]),
+    # Who receives what lives on its own screen — "Who gets told" — so the
+    # addresses are not buried among the server settings that carry them.
     ("Notifications", [
         SettingField("TELEGRAM_ENABLED", "Telegram messages", "switch"),
-        SettingField("TELEGRAM_CHAT_ID",
-                     "Telegram chat IDs (comma-separated for several)"),
-        SettingField("EMAIL_ENABLED", "Email alerts", "switch"),
+        SettingField("EMAIL_ENABLED", "Email reports", "switch"),
         SettingField("EMAIL_SMTP_HOST", "Email server"),
         SettingField("EMAIL_SMTP_PORT", "Email server port", "number",
                      minimum=1, maximum=65535),
-        SettingField("EMAIL_FROM", "Send alerts from"),
-        SettingField("EMAIL_TO", "Send alerts to"),
         SettingField("SLACK_ENABLED", "Slack messages", "switch"),
         SettingField("TEAMS_ENABLED", "Microsoft Teams messages", "switch"),
         SettingField("PAGERDUTY_ENABLED", "PagerDuty alerts", "switch"),
@@ -3123,6 +3409,8 @@ to the buttons underneath.[/]
   [{WHITE}]Read backed-up data[/]  Browse collected or restored files
   [{WHITE}]Scheduling[/]           What runs, at which times, and how long
                         each copy is kept
+  [{WHITE}]Who gets told[/]        Email addresses and Telegram chats, and a
+                        test button to prove both work
   [{WHITE}]Settings[/]             Storage, notifications, log detail
   [{WHITE}]API keys & passwords[/] Add or change stored credentials
   [{WHITE}]Encryption keys[/]      View or replace the keys that lock backups
@@ -3381,6 +3669,18 @@ class HonestbackupTUI(App):
     }}
     .add-time:hover {{ background: {CYAN}; color: {BLACK}; }}
     .schedule-hours {{ width: 11; }}
+
+    /* ---------- recipients ---------- */
+    #recipients-body {{ height: 1fr; padding: 0 3; }}
+    .recipient-list {{ height: auto; padding: 0 0 0 2; }}
+    .recipient-cell {{ height: 3; width: 1fr; }}
+    .recipient-input {{ width: 1fr; }}
+    .recipient-add-row {{ height: 3; padding: 0 0 0 2; }}
+    .add-recipient {{
+        width: auto; height: 3;
+        border: none; background: {PANEL}; color: {CYAN};
+    }}
+    .add-recipient:hover {{ background: {CYAN}; color: {BLACK}; }}
 
     /* ---------- logs ---------- */
     #logs-intro {{ height: auto; padding: 0 3; }}

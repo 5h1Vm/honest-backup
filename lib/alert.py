@@ -1,3 +1,5 @@
+import html as html_module
+import re
 import smtplib
 import ssl
 from email.mime.text import MIMEText
@@ -119,21 +121,42 @@ def send_telegram_alert(message):
             raise ValueError("TELEGRAM_CHAT_ID not configured")
 
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+
+        # 4096 characters is the hard limit; going over is a 400 like any
+        # other, so trim here rather than find out from the API.
+        if len(message) > 4000:
+            message = message[:4000] + "\n…truncated, see the attached log"
+
+        def post(chat_id, text, html):
+            payload = {'chat_id': chat_id, 'text': text}
+            if html:
+                payload['parse_mode'] = 'HTML'
+            r = requests.post(url, json=payload, timeout=10)
+            if not r.ok:
+                raise RuntimeError(f"{r.status_code} {r.text[:200]}")
+            return r
+
         # One recipient failing must not silence the rest, so each is sent
         # separately and the result is "did anyone get it".
         delivered = 0
         for chat_id in chat_ids:
             try:
-                response = requests.post(url, json={
-                    'chat_id': chat_id,
-                    'text': message,
-                    'parse_mode': 'HTML',
-                }, timeout=10)
-                response.raise_for_status()
+                post(chat_id, message, html=True)
                 delivered += 1
             except Exception as e:
-                print(f"Telegram: {chat_id} did not receive the alert: {e}",
-                      flush=True)
+                # A malformed tag in text quoted from a collector should cost
+                # the formatting, not the whole notification. Send it again as
+                # plain text so the summary still arrives.
+                print(f"Telegram: {chat_id} rejected the formatted alert: {e}"
+                      " — retrying as plain text", flush=True)
+                try:
+                    plain = re.sub(r"</?b>", "", message)
+                    plain = html_module.unescape(plain)
+                    post(chat_id, plain, html=False)
+                    delivered += 1
+                except Exception as e2:
+                    print(f"Telegram: {chat_id} did not receive the alert: "
+                          f"{e2}", flush=True)
         return delivered > 0
     except Exception as e:
         print(f"Failed to send Telegram alert: {e}", flush=True)
