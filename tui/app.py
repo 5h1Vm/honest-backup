@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import queue
 import re
 import json
 import shlex
@@ -717,6 +718,7 @@ MENU_ITEMS: list[tuple[str, str, str]] = [
     ("browse", "Read backed-up data", "Open restored files — JSON shown in a clean viewer"),
     ("schedule", "Scheduling", "Choose what gets backed up, and how often"),
     ("recipients", "Who gets told", "Email addresses and Telegram chats for reports"),
+    ("notion", "Notion sign-in", "Sign the Notion backup into an account"),
     ("settings", "Settings", "Storage, notifications and other options"),
     ("credentials", "API keys & passwords", "Add or change the credentials the backup uses"),
     ("keys", "Encryption keys", "View or replace the keys that lock your backups"),
@@ -850,6 +852,8 @@ class HomeScreen(NavScreen):
             app.push_screen(ScheduleScreen())
         elif item_id == "recipients":
             app.push_screen(RecipientsScreen())
+        elif item_id == "notion":
+            app.push_screen(NotionSignInScreen())
         elif item_id == "restore":
             app.push_screen(RestoreWizardScreen(), app.restore_confirmed)
         elif item_id == "logs":
@@ -2036,6 +2040,259 @@ class ScheduleScreen(NavScreen):
             )
 
         self.app.call_from_thread(render)
+
+
+# ======================================================================
+# Notion sign-in
+# ======================================================================
+class NotionSignInScreen(NavScreen):
+    """Sign the Notion collector's browser profile into an account.
+
+    The collector never signs in — it opens a saved browser profile and
+    expects a session to be there. When it lapses the export fails with a
+    browser error that says nothing about credentials, so this screen
+    exists to put a session there and to say plainly whether one is.
+
+    Notion mails a code instead of taking a password, which means the
+    browser has to stay open between asking and answering. One worker
+    thread holds it and waits on a queue for the code typed here.
+    """
+
+    BINDINGS = [Binding("escape", "back", "Back", priority=True)]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._codes: queue.Queue[str] = queue.Queue(maxsize=1)
+        # Not _running: Textual's MessagePump already owns that name, and
+        # shadowing it stops the screen's own message loop.
+        self._signing_in = False
+
+    def compose(self) -> ComposeResult:
+        yield TitleBar("Notion sign-in")
+        with Vertical(id="notion-body"):
+            yield Static(
+                f"[{MUTED}]Notion is backed up by driving a browser, which "
+                f"needs an account signed in. Notion sends a code by email "
+                f"rather than taking a password, so this asks for the "
+                f"address first, then the code.[/]\n",
+                id="notion-intro",
+            )
+            yield Static("", id="notion-state")
+            with Horizontal(classes="form-row"):
+                yield Label("Email", classes="form-label")
+                yield Input(
+                    placeholder="you@example.com",
+                    id="notion-email",
+                )
+            with Horizontal(classes="form-row"):
+                yield Label("Code", classes="form-label")
+                yield Input(
+                    placeholder="waiting for the email…",
+                    id="notion-code",
+                    disabled=True,
+                )
+            yield RichLog(id="notion-log", markup=True, wrap=True)
+        with Horizontal(classes="button-row"):
+            yield Button("Sign in", id="notion-start", variant="success")
+            yield Button("Send the code", id="notion-submit", disabled=True)
+            yield Button("Check", id="notion-check")
+            yield Button("Start over", id="notion-reset", variant="warning")
+            yield Button("← Back", id="notion-back", variant="primary")
+        yield hint_bar(
+            "Type the address, press Sign in, then paste the code that "
+            "arrives · Esc back"
+        )
+
+    def on_mount(self) -> None:
+        # Checking means launching the browser and loading the workspace,
+        # which takes the better part of a minute and holds the profile
+        # open. Too rude to do to someone who only opened the screen, so
+        # it waits to be asked.
+        self.query_one("#notion-state", Static).update(
+            f"[{MUTED}]Press [b]Check[/b] to see whether the saved profile "
+            f"is still signed in — it opens the workspace to find out, so "
+            f"give it a minute.[/]"
+        )
+
+    # -- talking to the worker ------------------------------------------
+    def _say(self, message: str) -> None:
+        self.query_one("#notion-log", RichLog).write(message)
+
+    def _busy(self, running: bool) -> None:
+        self._signing_in = running
+        self.query_one("#notion-start", Button).disabled = running
+        self.query_one("#notion-check", Button).disabled = running
+        self.query_one("#notion-reset", Button).disabled = running
+
+    @on(Button.Pressed, "#notion-check")
+    def _check_pressed(self) -> None:
+        self._check_state()
+
+    def _check_state(self) -> None:
+        self.query_one("#notion-state", Static).update(
+            f"[{MUTED}]Checking the saved profile…[/]"
+        )
+        self._busy(True)
+        self._check_worker()
+
+    @work(thread=True)
+    def _check_worker(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "notion_login", PROJECT_ROOT / "notion-login.py")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+            signed_in, message = module.profile_state()
+        except Exception as exc:
+            signed_in, message = False, f"Could not open the profile: {exc}"
+
+        def show() -> None:
+            colour = GREEN if signed_in else YELLOW
+            mark = "✓" if signed_in else "!"
+            self.query_one("#notion-state", Static).update(
+                f"[{colour}]{mark}[/] {message}"
+            )
+            self._busy(False)
+
+        self.app.call_from_thread(show)
+
+    @on(Button.Pressed, "#notion-start")
+    def _start(self) -> None:
+        address = self.query_one("#notion-email", Input).value.strip()
+        if "@" not in address:
+            self.notify("That is not an email address.",
+                        title="Notion sign-in", severity="error")
+            return
+        # Drain anything left from an abandoned attempt, or the worker
+        # would pick up a stale code the moment it asks.
+        while not self._codes.empty():
+            self._codes.get_nowait()
+        self.query_one("#notion-log", RichLog).clear()
+        self._busy(True)
+        self._sign_in_worker(address)
+
+    @on(Button.Pressed, "#notion-submit")
+    @on(Input.Submitted, "#notion-code")
+    def _submit_code(self) -> None:
+        box = self.query_one("#notion-code", Input)
+        code = box.value.strip()
+        if not code:
+            return
+        self._codes.put(code)
+        box.value = ""
+        box.disabled = True
+        box.placeholder = "waiting for the email…"
+        self.query_one("#notion-submit", Button).disabled = True
+        self._say(f"[{MUTED}]Code sent, checking…[/]")
+
+    @work(thread=True)
+    def _sign_in_worker(self, address: str) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "notion_login", PROJECT_ROOT / "notion-login.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        def note(message: str) -> None:
+            self.app.call_from_thread(self._say, f"[{MUTED}]{message}[/]")
+
+        def get_code() -> str:
+            def open_box() -> None:
+                box = self.query_one("#notion-code", Input)
+                box.disabled = False
+                box.placeholder = "the six digits from the email"
+                box.focus()
+                self.query_one("#notion-submit", Button).disabled = False
+            self.app.call_from_thread(open_box)
+            # Ten minutes is long enough to go and find the email, and
+            # short enough that a forgotten attempt releases the browser.
+            try:
+                return self._codes.get(timeout=600)
+            except queue.Empty:
+                return ""
+
+        try:
+            module.run_sign_in(address, get_code, log=note)
+            outcome = (True, "Signed in. The workspace opens and the export "
+                             "menu is reachable.")
+        except Exception as exc:
+            outcome = (False, str(exc))
+
+        def finish() -> None:
+            signed_in, message = outcome
+            self._busy(False)
+            box = self.query_one("#notion-code", Input)
+            box.disabled = True
+            box.value = ""
+            self.query_one("#notion-submit", Button).disabled = True
+            colour = GREEN if signed_in else RED
+            self.query_one("#notion-state", Static).update(
+                f"[{colour}]{'✓' if signed_in else '✗'}[/] {message}"
+            )
+            self._say(f"[{colour}]{message}[/]")
+            self.notify(
+                message if not signed_in else "Signed in.",
+                title="Notion sign-in",
+                severity="information" if signed_in else "error",
+                timeout=12,
+            )
+
+        self.app.call_from_thread(finish)
+
+    @on(Button.Pressed, "#notion-reset")
+    def _reset(self) -> None:
+        def confirmed(yes: bool) -> None:
+            if not yes:
+                return
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "notion_login", PROJECT_ROOT / "notion-login.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            try:
+                aside = module.move_profile_aside()
+            except OSError as exc:
+                self.notify(f"Could not move the profile: {exc}",
+                            title="Notion sign-in", severity="error")
+                return
+            if aside is None:
+                self.notify("There was no profile to move.",
+                            title="Notion sign-in")
+            else:
+                self._say(f"[{MUTED}]Old profile moved to {aside}[/]")
+                self.notify(
+                    f"Moved aside. Delete {aside.name} once a real backup "
+                    f"run has succeeded.",
+                    title="Notion sign-in", timeout=12,
+                )
+            self._check_state()
+
+        self.app.push_screen(
+            ConfirmScreen(
+                "Start over with a fresh profile?",
+                "The signed-in session is renamed out of the way, not "
+                "deleted, so you can put it back if this goes wrong. "
+                "Notion backups will fail until you sign in again.",
+                "Move it aside",
+            ),
+            confirmed,
+        )
+
+    @on(Button.Pressed, "#notion-back")
+    def _back_btn(self) -> None:
+        self.app.pop_screen()
+
+    def action_back(self) -> None:
+        if self._signing_in:
+            self.notify("Sign-in is still running — let it finish or press "
+                        "Start over.", title="Notion sign-in",
+                        severity="warning")
+            return
+        self.app.pop_screen()
 
 
 # ======================================================================
@@ -3669,6 +3926,15 @@ class HonestbackupTUI(App):
     }}
     .add-time:hover {{ background: {CYAN}; color: {BLACK}; }}
     .schedule-hours {{ width: 11; }}
+
+    /* ---------- notion sign-in ---------- */
+    #notion-body {{ height: 1fr; padding: 1 3; }}
+    #notion-intro {{ height: auto; }}
+    #notion-state {{ height: auto; padding: 0 0 1 0; }}
+    #notion-log {{
+        height: 1fr; min-height: 6; margin: 1 0 0 0;
+        background: {BLACK}; border: round {BORDER};
+    }}
 
     /* ---------- recipients ---------- */
     #recipients-body {{ height: 1fr; padding: 0 3; }}

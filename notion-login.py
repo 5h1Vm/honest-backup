@@ -34,8 +34,8 @@ from collectors.notion.config import (  # noqa: E402
     WORKSPACE_URL,
 )
 
-BOLD, DIM, RED, GREEN, YELLOW, OFF = (
-    "\033[1m", "\033[2m", "\033[31m", "\033[32m", "\033[33m", "\033[0m",
+BOLD, DIM, RED, GREEN, OFF = (
+    "\033[1m", "\033[2m", "\033[31m", "\033[32m", "\033[0m",
 )
 
 # The collector needs this control to open the export dialog. If it is on
@@ -103,64 +103,83 @@ def workspace_reachable(page) -> bool:
         return False
 
 
-def check() -> int:
+def profile_state() -> tuple[bool, str]:
+    """(signed in?, a sentence saying how we know)."""
     from playwright.sync_api import sync_playwright
 
     directory = profile_dir()
     if not directory.is_dir():
-        say(f"{YELLOW}No profile at {directory}{OFF}")
-        say(f"{DIM}Run this without --check to make one.{OFF}")
-        return 1
+        return False, f"No profile yet at {directory}."
 
-    say(f"{DIM}Opening {directory}{OFF}")
     with sync_playwright() as playwright:
         context = open_profile(playwright)
         try:
             page = only_page(context)
             if workspace_reachable(page):
-                say(f"{GREEN}Signed in.{OFF} The workspace opens and the "
-                    f"export menu is reachable.")
-                return 0
-            say(f"{RED}Not signed in{OFF} — or signed into an account that "
-                f"cannot see this workspace.")
-            say(f"{DIM}Landed on: {page.url}{OFF}")
-            return 1
+                return True, ("Signed in. The workspace opens and the export "
+                              "menu is reachable.")
+            return False, ("Not signed in, or signed into an account that "
+                           f"cannot see this workspace. It landed on "
+                           f"{page.url}.")
         finally:
             context.close()
 
 
-def reset() -> int:
+def move_profile_aside() -> Path | None:
+    """Rename the profile out of the way. Returns where it went."""
     directory = profile_dir()
     if not directory.is_dir():
-        say(f"{DIM}Nothing to move — {directory} does not exist.{OFF}")
-        return 0
+        return None
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     aside = directory.with_name(f"{directory.name}.{stamp}")
     shutil.move(str(directory), str(aside))
+    return aside
+
+
+def check() -> int:
+    say(f"{DIM}Opening {profile_dir()}{OFF}")
+    signed_in, message = profile_state()
+    say(f"{GREEN if signed_in else RED}{message}{OFF}")
+    return 0 if signed_in else 1
+
+
+def reset() -> int:
+    aside = move_profile_aside()
+    if aside is None:
+        say(f"{DIM}Nothing to move — {profile_dir()} does not exist.{OFF}")
+        return 0
     say(f"{GREEN}Moved{OFF} the old profile to {aside}")
     say(f"{DIM}Delete it once a real backup run has succeeded.{OFF}")
     return 0
 
 
-def sign_in() -> int:
+class SignInError(Exception):
+    """Sign-in stopped for a reason worth showing the person driving it."""
+
+
+def run_sign_in(address, get_code, log=None):
+    """Drive the profile through Notion's email-and-code sign-in.
+
+    get_code() is called once the code box appears and should block until
+    the person has fetched the code from their inbox — the terminal reads
+    it from stdin, the TUI waits on a queue. Both get the same flow that
+    way, so a fix here reaches both.
+
+    Returns the page URL it finished on. Raises SignInError with
+    something readable when it cannot get there.
+    """
     from playwright.sync_api import sync_playwright
 
-    print()
-    print(f"{BOLD}Signing the Notion profile in{OFF}")
-    say(f"{DIM}profile: {profile_dir()}{OFF}")
-    print()
-
-    address = ask("Email address for the Notion account:")
+    note = log or (lambda message: None)
     if not address or "@" not in address:
-        say(f"{RED}That is not an email address.{OFF}")
-        return 1
+        raise SignInError("That is not an email address.")
 
     with sync_playwright() as playwright:
         context = open_profile(playwright)
         try:
             page = only_page(context)
 
-            say(f"{DIM}Opening the login page…{OFF}")
+            note("Opening the login page…")
             page.goto("https://www.notion.so/login",
                       wait_until="domcontentloaded", timeout=60000)
 
@@ -169,7 +188,7 @@ def sign_in() -> int:
             email_box.fill(address)
             email_box.press("Enter")
 
-            say(f"{DIM}Asking Notion to send a code…{OFF}")
+            note("Asking Notion to send a code…")
             page.wait_for_timeout(4000)
 
             # The code lands in a field Notion does not mark as an email
@@ -182,49 +201,65 @@ def sign_in() -> int:
             try:
                 code_box.wait_for(state="visible", timeout=30000)
             except Exception:
-                say(f"{RED}No code box appeared.{OFF}")
                 shot = HERE / "notion-login-stuck.png"
                 page.screenshot(path=str(shot), full_page=True)
-                say(f"{DIM}Screenshot of what it showed: {shot}{OFF}")
-                say(f"{DIM}Landed on: {page.url}{OFF}")
-                return 1
+                raise SignInError(
+                    f"No code box appeared. It stopped on {page.url} — "
+                    f"there is a screenshot at {shot}."
+                )
 
-            print()
-            say(f"Notion has emailed a code to {BOLD}{address}{OFF}.")
-            code = ask("Paste the code here:")
+            note(f"Notion has emailed a code to {address}.")
+            code = get_code()
             if not code:
-                say(f"{RED}No code given.{OFF}")
-                return 1
+                raise SignInError("No code given.")
 
             code_box.fill(code)
             code_box.press("Enter")
 
-            say(f"{DIM}Checking the workspace opens…{OFF}")
+            note("Checking the workspace opens…")
             page.wait_for_timeout(6000)
 
             if workspace_reachable(page):
-                print()
-                say(f"{GREEN}Signed in.{OFF} The workspace opens and the "
-                    f"export menu is reachable.")
-                print()
-                say(f"{DIM}Now prove it end to end:{OFF}")
-                say("python3 -m orchestrator.run --force --only notion")
-                return 0
+                return page.url
 
-            print()
-            say(f"{RED}Signed in, but this account cannot open the "
-                f"workspace.{OFF}")
-            say(f"{DIM}Landed on: {page.url}{OFF}")
-            say(f"{DIM}NOTION_WORKSPACE_URL points at:{OFF}")
-            say(f"{DIM}  {WORKSPACE_URL}{OFF}")
-            say(f"{DIM}Either the account is not a member, or that setting "
-                f"names the old workspace.{OFF}")
             shot = HERE / "notion-login-stuck.png"
             page.screenshot(path=str(shot), full_page=True)
-            say(f"{DIM}Screenshot: {shot}{OFF}")
-            return 1
+            raise SignInError(
+                f"Signed in, but this account cannot open the workspace. "
+                f"It stopped on {page.url}. Either the account is not a "
+                f"member of {WORKSPACE_URL}, or that setting still names "
+                f"the old workspace. Screenshot at {shot}."
+            )
         finally:
             context.close()
+
+
+def sign_in() -> int:
+    print()
+    print(f"{BOLD}Signing the Notion profile in{OFF}")
+    say(f"{DIM}profile: {profile_dir()}{OFF}")
+    print()
+
+    address = ask("Email address for the Notion account:")
+
+    def get_code():
+        print()
+        return ask("Paste the code here:")
+
+    try:
+        run_sign_in(address, get_code, log=lambda m: say(f"{DIM}{m}{OFF}"))
+    except SignInError as exc:
+        print()
+        say(f"{RED}{exc}{OFF}")
+        return 1
+
+    print()
+    say(f"{GREEN}Signed in.{OFF} The workspace opens and the export menu "
+        f"is reachable.")
+    print()
+    say(f"{DIM}Now prove it end to end:{OFF}")
+    say("python3 -m orchestrator.run --force --only notion")
+    return 0
 
 
 def main() -> int:
