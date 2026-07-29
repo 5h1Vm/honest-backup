@@ -66,24 +66,77 @@ echo
 # the scripts
 # ---------------------------------------------------------------------------
 mkdir -p "$TOOL" "$DATA" || die "could not create $TOOL"
-for f in pull.py view.py reseed.py copy-now.sh get-tools.sh \
+for f in pull.py view.py reseed.py copy-now.sh sync.command get-tools.sh \
          HonestBackup.command pull.conf.example README.md; do
     cp "$HERE/$f" "$TOOL/" || die "could not copy $f"
 done
 chmod +x "$TOOL"/*.sh "$TOOL"/*.py "$TOOL"/*.command 2>/dev/null
 ok "scripts copied to $TOOL"
 
-# A launcher at the very top of the drive too, so opening it in Finder
-# shows something to double-click immediately rather than a folder to go
-# digging in first. It is a two-line stub, not a second copy of the real
-# script — the real one stays inside HonestBackup/, where it can find
-# pull.py and tools/ beside it.
-cat > "$DRIVE/HonestBackup.command" <<'STUB'
+# ---------------------------------------------------------------------------
+# four launchers at the very top of the drive — two platforms, two speeds
+#
+#   Menu Mac / Menu Linux   open the menu: choose sync, look inside, check
+#   Sync Mac / Sync Linux   do the sync and quit, for someone who already
+#                           knows what they want
+#
+# Each is a stub, not a second copy of the real script: the real ones stay
+# inside HonestBackup/, where they can find pull.py and tools/ beside
+# them. Deleting one of these four and double-clicking the folder still
+# works — they are convenience, not the only way in.
+# ---------------------------------------------------------------------------
+cat > "$DRIVE/Menu Mac.command" <<'STUB'
 #!/bin/bash
 cd "$(dirname "${BASH_SOURCE[0]}")/HonestBackup" && exec ./HonestBackup.command
 STUB
-chmod +x "$DRIVE/HonestBackup.command"
-ok "double-click launcher placed at the top of the drive"
+chmod +x "$DRIVE/Menu Mac.command"
+
+cat > "$DRIVE/Sync Mac.command" <<'STUB'
+#!/bin/bash
+cd "$(dirname "${BASH_SOURCE[0]}")/HonestBackup" && exec ./sync.command
+STUB
+chmod +x "$DRIVE/Sync Mac.command"
+
+# Exec takes an absolute path, resolved here and now — %k is a URI, not a
+# path, and dirname on it produces garbage, so it does not do what it
+# looks like it does. This is the same tradeoff pull.conf's DESTINATION
+# already makes: fixed to where the drive is mounted right now, and fixed
+# again by re-running this script if that ever changes.
+cat > "$DRIVE/Menu Linux.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Menu Linux
+Comment=Choose what to do with this drive
+Icon=drive-harddisk
+Terminal=true
+Path=$TOOL
+Exec="$TOOL/HonestBackup.command"
+Categories=Utility;Archiving;
+EOF
+chmod +x "$DRIVE/Menu Linux.desktop"
+
+cat > "$DRIVE/Sync Linux.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Sync Linux
+Comment=Bring the latest backups down from Backblaze
+Icon=drive-harddisk
+Terminal=true
+Path=$TOOL
+Exec="$TOOL/copy-now.sh"
+Categories=Utility;Archiving;
+EOF
+chmod +x "$DRIVE/Sync Linux.desktop"
+
+for launcher in "Menu Linux.desktop" "Sync Linux.desktop"; do
+    command -v gio >/dev/null 2>&1 && \
+        gio set "$DRIVE/$launcher" metadata::trusted true 2>/dev/null
+done
+ok "four launchers placed at the top of the drive"
+echo "      ${DIM}Menu Mac.command    Sync Mac.command${OFF}"
+echo "      ${DIM}Menu Linux.desktop  Sync Linux.desktop${OFF}"
 
 # ---------------------------------------------------------------------------
 # rclone, so the drive does not depend on the machine having it
@@ -173,39 +226,22 @@ if grep -qE "^REMOTE=(backblaze:your-bucket)?$|^REMOTE=$" "$TOOL/pull.conf" \
     echo "          REMOTE=backblaze:honestbackup"
 fi
 
-# ---------------------------------------------------------------------------
-# a launcher on the drive itself
-# ---------------------------------------------------------------------------
-cat > "$DRIVE/Copy backups to this drive.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Version=1.0
-Name=Copy backups to this drive
-Comment=Bring the latest backups down from Backblaze
-Icon=drive-harddisk
-Terminal=true
-Exec=bash -c 'cd "\$(dirname "%k")/HonestBackup" && ./copy-now.sh'
-Categories=Utility;Archiving;
-EOF
-chmod +x "$DRIVE/Copy backups to this drive.desktop"
-command -v gio >/dev/null 2>&1 && \
-    gio set "$DRIVE/Copy backups to this drive.desktop" metadata::trusted true 2>/dev/null
-ok "launcher placed at the top of the drive"
-
 if [[ -n "${SUDO_USER:-}" ]]; then
-    chown -R "$REAL_USER" "$TOOL" "$DRIVE/Copy backups to this drive.desktop" 2>/dev/null \
+    chown -R "$REAL_USER" "$TOOL" \
+        "$DRIVE/Menu Mac.command" "$DRIVE/Sync Mac.command" \
+        "$DRIVE/Menu Linux.desktop" "$DRIVE/Sync Linux.desktop" 2>/dev/null \
         && ok "ownership handed to $REAL_USER" \
         || warn "could not change ownership — you may need sudo to run it"
 fi
 
 echo
-echo "${BOLD}Done${OFF}"
-echo "  Plug this drive into any Linux machine with Python and double-click"
-echo "  ${DIM}Copy backups to this drive${OFF} at the top of it."
+echo "${BOLD}Done${OFF}  — four launchers at the top of the drive"
 echo
-echo "  On a Mac, double-click ${DIM}HonestBackup.command${OFF} at the top of"
-echo "  the drive ${DIM}— it offers to fetch what it needs onto the drive,"
-echo "  and installs nothing on the Mac itself.${OFF}"
+echo "  ${BOLD}Sync Mac${OFF} / ${BOLD}Sync Linux${OFF}   the fast one — bring backups down and quit"
+echo "  ${BOLD}Menu Mac${OFF} / ${BOLD}Menu Linux${OFF}   choose: sync, look inside, check, re-verify"
+echo
+echo "  ${DIM}First time on a new machine, use Menu — it can fetch what is"
+echo "  needed onto the drive, and installs nothing on the machine itself.${OFF}"
 echo
 echo "  Or from a terminal:  $TOOL/copy-now.sh"
 echo
