@@ -465,6 +465,29 @@ def main():
     repository = Repository()
     if not repository.upload(artifact):
         raise RuntimeError("Failed to store backup in repository.")
+    # The archive was built in workspace/archive/ and then copied into the
+    # repository. Nothing ever removed the staging copy, so every run left a
+    # second full archive behind — 155 MB a day on top of the backups
+    # themselves, and enough to fill this disk in about four months. It was
+    # never noticed because cleanup_workspace only considers dated day
+    # folders, and "archive" is not a date.
+    #
+    # Dropped only once the repository copy is confirmed present and the same
+    # size: staging is the sole copy until then, and a cleanup that runs
+    # before the thing it depends on is how backups get lost.
+    try:
+        stored = repository.root / "archives" / artifact.archive.name
+        if stored.is_file() and stored.stat().st_size == artifact.archive.stat().st_size:
+            freed = artifact.archive.stat().st_size
+            artifact.archive.unlink()
+            logger.info(f"Staging copy removed, {freed // 1048576} MB freed "
+                        f"(the repository holds it now)")
+        else:
+            logger.warning("Staging copy kept — the repository copy does not "
+                           "match it yet")
+    except OSError as exc:
+        logger.warning(f"Could not remove the staging copy: {exc}")
+
     metadata = MetadataStore(repository.root)
     result = SyncEngine().sync()
     session.replicated["repository"] = True
