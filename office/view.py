@@ -25,11 +25,14 @@ encrypted. See KEY, below.
 from __future__ import annotations
 
 import argparse
+import atexit
+import getpass
 import os
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ARCHIVE_SUFFIX = ".tar.zst.age"
@@ -85,29 +88,98 @@ def tool(name: str) -> str:
         f"     which installs nothing on this machine.")
 
 
-def key_file() -> Path:
-    """The private key that opens the archives.
+_key_path_cache: Path | None = None
+# Whether that path is a temp file this process made, and may therefore
+# delete. A key the operator pointed us at belongs to them, not to us.
+_key_is_ours: bool = False
 
-    On the drive it lives in keys/archive.key. Keeping it there means a
-    lost drive is a readable backup, so get-tools.sh makes you say so
-    explicitly before it copies one over. If it is not on the drive, an
-    environment variable can point at one held somewhere safer.
+
+def _write_temp_key(content: str) -> Path:
+    """Key text, held on disk only as long as one decrypt needs it.
+
+    age has no way to take key material except as a file path, so this is
+    unavoidable — but the file lives in the system temp directory, never
+    on the drive, is created readable only by this user, and is deleted
+    the moment the process exits.
     """
+    fd, raw_path = tempfile.mkstemp(prefix="honestbackup-key-")
+    os.chmod(raw_path, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(content.strip() + "\n")
+    return Path(raw_path)
+
+
+def _forget_key() -> None:
+    """Delete the temporary key file — only if this process created it.
+
+    This used to delete whatever path it had cached. When the key arrived by
+    HONESTBACKUP_KEY, that path was the operator's own key file, and exiting
+    destroyed the one thing that can open every archive ever made. Cleanup
+    must never be able to remove something it did not create, so ownership
+    is now tracked rather than assumed.
+    """
+    global _key_path_cache, _key_is_ours
+    if _key_path_cache is not None and _key_is_ours:
+        _key_path_cache.unlink(missing_ok=True)
+    _key_path_cache = None
+    _key_is_ours = False
+
+
+atexit.register(_forget_key)
+
+
+def key_file() -> Path:
+    """The private key that opens the archives — never read from the drive.
+
+    A drive is easy to lose and easy to steal; a key that travelled with
+    it would make that the same thing as losing the backups themselves.
+    So this asks for the key instead of looking for one, in order:
+
+      1. HONESTBACKUP_KEY        a path to a key file kept somewhere else
+      2. HONESTBACKUP_KEY_TEXT   the key itself, e.g. set once by the menu
+                                  so a whole session only asks once
+      3. typed in now, hidden, if this is a real terminal
+
+    Whichever way it arrives, resolving it happens once per run — every
+    later call in the same session reuses the same answer rather than
+    asking again for every file opened.
+    """
+    global _key_path_cache, _key_is_ours
+    if _key_path_cache is not None and _key_path_cache.is_file():
+        return _key_path_cache
+
     from_env = os.environ.get("HONESTBACKUP_KEY")
     if from_env:
         path = Path(from_env).expanduser()
         if path.is_file():
+            # Theirs. Read it where it lies and never touch it again.
+            _key_path_cache, _key_is_ours = path, False
             return path
         die(f"HONESTBACKUP_KEY points at {path}, which is not there.")
-    for candidate in (SCRIPT_DIR / "keys" / "archive.key",
-                      SCRIPT_DIR / "archive.key"):
-        if candidate.is_file():
-            return candidate
-    die("The private key is not on this drive, so the archives cannot be\n"
-        "     opened. Either put it at keys/archive.key next to this "
-        "script,\n"
-        "     or point at one with:  export HONESTBACKUP_KEY=/path/to/"
-        "archive.key")
+
+    from_text = os.environ.get("HONESTBACKUP_KEY_TEXT")
+    if from_text:
+        _key_path_cache, _key_is_ours = _write_temp_key(from_text), True
+        return _key_path_cache
+
+    if sys.stdin.isatty():
+        print()
+        print(f"  {BOLD}This backup is encrypted.{OFF}")
+        print(f"  {DIM}Paste the private key — it starts with "
+              f"AGE-SECRET-KEY-1. Nothing is saved.{OFF}")
+        try:
+            entered = getpass.getpass("  Key: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            entered = ""
+        if entered:
+            _key_path_cache, _key_is_ours = _write_temp_key(entered), True
+            return _key_path_cache
+
+    die("No private key available.\n"
+        "     Either point at one:  export HONESTBACKUP_KEY=/path/to/key\n"
+        "     or set its text:      export HONESTBACKUP_KEY_TEXT='AGE-"
+        "SECRET-KEY-1...'\n"
+        "     or run this from a real terminal, which will ask for it.")
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +198,12 @@ def repository_root() -> Path:
                 root = Path(value.strip()).expanduser()
                 if (root / "archives").is_dir():
                     return root
-    # Failing that, look where the drive layout puts it relative to here:
-    # HonestBackup/Backups/archives normally, or archives loose beside
-    # this script on an older or hand-built drive.
-    for candidate in (SCRIPT_DIR / "Backups", SCRIPT_DIR,
-                      SCRIPT_DIR.parent, Path.cwd()):
+    # Failing that, look where the drive layout puts it relative to here.
+    # This script normally lives in HonestBackup/Scripts, with the data in
+    # the sibling folder HonestBackup/Backups — SCRIPT_DIR.parent / "Backups".
+    # The rest are fallbacks for an older or hand-built drive.
+    for candidate in (SCRIPT_DIR.parent / "Backups", SCRIPT_DIR / "Backups",
+                      SCRIPT_DIR, SCRIPT_DIR.parent, Path.cwd()):
         if (candidate / "archives").is_dir():
             return candidate
     die("No archives folder found.\n"
@@ -155,6 +228,32 @@ def archive_for(root: Path, backup_id: str) -> Path:
         die(f"No backup called {backup_id} on this drive.\n"
             f"     Run with --list to see what is here.")
     return path
+
+
+def reports(root: Path) -> list[str]:
+    """Backup ids that have a report on this drive, newest first.
+
+    Reports live beside archives/, hashes/ and manifests/ — the same
+    repository tree that already syncs here — but unlike the archives
+    they are not encrypted. A report is a summary of what ran, not the
+    tenant's actual data, so reading one needs no key at all: the point
+    is to make the run's outcome checkable at a glance, including by
+    someone who is not the one holding the key.
+    """
+    folder = root / "reports"
+    if not folder.is_dir():
+        return []
+    return sorted(
+        (path.stem for path in folder.glob("*.md")), reverse=True,
+    )
+
+
+def read_report(root: Path, backup_id: str) -> str:
+    path = root / "reports" / f"{backup_id}.md"
+    if not path.is_file():
+        die(f"No report for {backup_id} on this drive.\n"
+            f"     Run with --reports to see what is here.")
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def human(size: float) -> str:
@@ -275,6 +374,41 @@ def print_tree(entries: list[str]) -> None:
             print(f"        {DIM}… {len(children) - 8} more{OFF}")
 
 
+def show_reports(root: Path) -> int:
+    found = reports(root)
+    print()
+    print(f"  {BOLD}Reports on this drive{OFF}")
+    print(f"  {DIM}no key needed — these are not encrypted{OFF}")
+    print()
+    if not found:
+        print(f"  {YELLOW}None yet.{OFF} A report is saved here after each "
+              f"backup that reaches this drive.")
+        print()
+        return 1
+    for backup_id in found:
+        print(f"    {backup_id}")
+    print()
+    print(f"  {DIM}{len(found)} report{'s' if len(found) != 1 else ''}. "
+          f"Read one with --report <id>.{OFF}")
+    print()
+    return 0
+
+
+def show_one_report(root: Path, backup_id: str) -> int:
+    print()
+    print(read_report(root, backup_id))
+    return 0
+
+
+def do_restore(root: Path, backup_id: str, dest: Path,
+               files: list[str] | None = None) -> int:
+    restore(root, backup_id, dest, files)
+    print()
+    print(f"  {GREEN}Restored{OFF} to {dest}")
+    print()
+    return 0
+
+
 def show_tree(root: Path, backup_id: str) -> int:
     print()
     print(f"  {BOLD}Inside {backup_id}{OFF}")
@@ -336,6 +470,112 @@ def ask(prompt: str) -> str:
         sys.exit(0)
 
 
+def restore(root: Path, backup_id: str, dest: Path,
+           files: list[str] | None = None) -> None:
+    """Decrypt a backup into ordinary files and folders on disk.
+
+    Reading with --cat is for looking; this is for having a real, usable
+    copy afterward that needs nothing further from this script. Everything
+    by default, or just the files named — either way the pipeline is the
+    same one --cat already uses, just handed to tar's own -C instead of
+    captured, so a whole backup extracts as fast as tar can write it.
+    """
+    archive = archive_for(root, backup_id)
+    key_file()  # resolved (and possibly asked for) before dest exists at all
+    dest.mkdir(parents=True, exist_ok=True)
+
+    if not files:
+        stream(archive, ["-x", "-C", str(dest)], capture=False)
+        return
+
+    # Selective: resolve each request against the archive's own recorded
+    # spelling — tar keeps tar's leading "./", the tree printed here does
+    # not — so a path typed exactly as Browse showed it still matches.
+    entries = tree(root, backup_id)
+
+    def tidy(text: str) -> str:
+        text = text.rstrip("/")
+        while text.startswith("./"):
+            text = text[2:]
+        return text
+
+    resolved, missing = [], []
+    for wanted in files:
+        match = next((e for e in entries if tidy(e) == tidy(wanted)), None)
+        (resolved if match else missing).append(match or wanted)
+    for name in missing:
+        print(f"  {YELLOW}not in this backup, skipped:{OFF} {name}")
+    if not resolved:
+        die("None of the requested files are in this backup.")
+    stream(archive, ["-x", "-C", str(dest)] + [r.rstrip("/") for r in resolved],
+           capture=False)
+
+
+def default_restore_dir(root: Path, backup_id: str) -> Path:
+    """Where a restore lands when nobody names a folder.
+
+    A sibling of wherever Backups actually turned out to be — same
+    reasoning repository_root() already applies for finding it in the
+    first place, so this stays correct on whichever machine and mount
+    point the drive is plugged into today.
+    """
+    return root.parent / "Restored" / backup_id
+
+
+def _report_menu(root: Path) -> None:
+    found = reports(root)
+    print()
+    if not found:
+        print(f"  {YELLOW}No reports on this drive yet.{OFF}")
+        print()
+        return
+    print(f"  {BOLD}Reports{OFF}   {DIM}no key needed{OFF}")
+    print()
+    for number, backup_id in enumerate(found, 1):
+        print(f"    {number:>2}.  {backup_id}")
+    print()
+    choice = ask(f"Which one? 1-{len(found)}, or Enter to go back:")
+    if not choice:
+        return
+    if not choice.isdigit() or not 1 <= int(choice) <= len(found):
+        print(f"  {RED}Pick a number from the list.{OFF}")
+        return
+    print()
+    print(read_report(root, found[int(choice) - 1]))
+
+
+def _restore_prompt(root: Path, backup_id: str) -> None:
+    print()
+    default = default_restore_dir(root, backup_id)
+    typed = ask(f"Restore to which folder? Enter for {default}:")
+    dest = Path(typed).expanduser() if typed else default
+    print(f"  {DIM}Restoring everything to {dest} …{OFF}")
+    try:
+        restore(root, backup_id, dest)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"  {RED}Restore failed:{OFF} {exc}")
+        return
+    print(f"  {GREEN}Restored{OFF} to {dest}")
+
+
+def reports_menu(root: Path) -> int:
+    """Reports only — the compliance path. No key, no archive browsing."""
+    found = reports(root)
+    if not found:
+        print()
+        print(f"  {YELLOW}No reports on this drive yet.{OFF} A report is "
+              f"saved here after each backup that reaches this drive.")
+        print()
+        return 1
+    while True:
+        _report_menu(root)
+        again = ask("Read another? Enter for yes, q to go back:")
+        if again.lower() in ("q", "quit", "exit"):
+            return 0
+
+
 def menu(root: Path) -> int:
     while True:
         found = backups(root)
@@ -350,9 +590,12 @@ def menu(root: Path) -> int:
             size = archive_for(root, backup_id).stat().st_size
             print(f"    {number:>2}.  {backup_id}   {DIM}{human(size)}{OFF}")
         print()
-        choice = ask(f"Which one? 1-{len(found)}, or q to quit:")
+        choice = ask(f"Which one? 1-{len(found)}, r for reports, or q to quit:")
         if choice.lower() in ("q", "quit", "exit", ""):
             return 0
+        if choice.lower() == "r":
+            _report_menu(root)
+            continue
         if not choice.isdigit() or not 1 <= int(choice) <= len(found):
             print(f"  {RED}Pick a number from the list.{OFF}")
             continue
@@ -364,9 +607,14 @@ def menu(root: Path) -> int:
         print_tree(entries)
         print()
         while True:
-            wanted = ask("Path to read, or Enter to go back:")
+            wanted = ask("Path to read, 'r' to restore this backup, "
+                        "or Enter to go back:")
             if not wanted:
                 break
+            if wanted.lower() == "r":
+                _restore_prompt(root, backup_id)
+                continue
+
             def tidy(text: str) -> str:
                 text = text.rstrip("/")
                 while text.startswith("./"):
@@ -403,6 +651,21 @@ def main() -> int:
                         help="print one file from a backup")
     parser.add_argument("--get", nargs=2, metavar=("ID", "PATH"),
                         help="write one file out beside this script")
+    parser.add_argument("--reports", action="store_true",
+                        help="which backups have a report — no key needed")
+    parser.add_argument("--reports-menu", action="store_true",
+                        help="pick and read a report interactively — no "
+                             "key needed")
+    parser.add_argument("--report", metavar="ID",
+                        help="read one backup's report — no key needed")
+    parser.add_argument("--restore", metavar="ID",
+                        help="decrypt a whole backup to real files on disk")
+    parser.add_argument("--to", metavar="DIR",
+                        help="where --restore writes to (default: a "
+                             "Restored/ folder on this drive)")
+    parser.add_argument("--files", nargs="+", metavar="PATH",
+                        help="with --restore, only these paths rather "
+                             "than the whole backup")
     options = parser.parse_args()
 
     root = repository_root()
@@ -414,6 +677,16 @@ def main() -> int:
         return show_file(root, options.cat[0], options.cat[1])
     if options.get:
         return get_file(root, options.get[0], options.get[1])
+    if options.reports:
+        return show_reports(root)
+    if options.reports_menu:
+        return reports_menu(root)
+    if options.report:
+        return show_one_report(root, options.report)
+    if options.restore:
+        dest = Path(options.to).expanduser() if options.to else \
+            default_restore_dir(root, options.restore)
+        return do_restore(root, options.restore, dest, options.files)
     return menu(root)
 
 

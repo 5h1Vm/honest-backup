@@ -2,12 +2,24 @@ from pathlib import Path
 from datetime import datetime
 import json
 
+from lib.logger import display_zone
+
+
+def _now() -> datetime:
+    """Now, in CRON_TIMEZONE — matches the log lines and the backup ID
+    this report describes, rather than whatever zone the machine's clock
+    happens to be set to. isoformat() on this carries its own real offset
+    (+05:30), so nothing downstream mistakes it for UTC the way the old
+    manually-appended "Z" did."""
+    return datetime.now(display_zone())
+
 
 class BackupReport:
     def __init__(self):
+        now = _now()
         self.report = {
-            "backup_date": datetime.utcnow().date().isoformat(),
-            "started_at": datetime.utcnow().isoformat() + "Z",
+            "backup_date": now.date().isoformat(),
+            "started_at": now.isoformat(),
             "finished_at": None,
             "duration_seconds": None,
             "collectors": {},
@@ -21,14 +33,14 @@ class BackupReport:
     def collector_start(self, name):
         self.report["collectors"][name] = {
             "status": "running",
-            "started_at": datetime.utcnow().isoformat() + "Z",
+            "started_at": _now().isoformat(),
         }
 
     def collector_finish(self, name, **data):
         collector = self.report["collectors"][name]
-        finished = datetime.utcnow()
-        started = datetime.fromisoformat(collector["started_at"].replace("Z", ""))
-        collector["finished_at"] = finished.isoformat() + "Z"
+        finished = _now()
+        started = datetime.fromisoformat(collector["started_at"])
+        collector["finished_at"] = finished.isoformat()
         collector["duration_seconds"] = round((finished - started).total_seconds(), 2)
         collector.update(data)
 
@@ -48,9 +60,9 @@ class BackupReport:
         self.report["errors"].append(message)
 
     def finish(self):
-        finished = datetime.utcnow()
-        self.report["finished_at"] = finished.isoformat() + "Z"
-        start = datetime.fromisoformat(self.report["started_at"].replace("Z", ""))
+        finished = _now()
+        self.report["finished_at"] = finished.isoformat()
+        start = datetime.fromisoformat(self.report["started_at"])
         self.report["duration_seconds"] = round((finished - start).total_seconds(), 2)
 
     def write(self, workspace):

@@ -3,6 +3,7 @@ from datetime import datetime
 import json
 
 from collectors.notion.api_client import NotionAPI
+from lib.jsonio import write_json
 
 
 class StatisticsCollector:
@@ -44,8 +45,7 @@ class StatisticsCollector:
                 stats["data_source_count"] += 1
 
         outfile = self.output_dir / "statistics.json"
-        with open(outfile, "w") as fp:
-            json.dump(stats, fp, indent=2)
+        write_json(outfile, stats)
 
         print(json.dumps(stats, indent=2))
         print()

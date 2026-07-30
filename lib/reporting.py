@@ -1,6 +1,7 @@
 import html
 import json
 import os
+import re
 from pathlib import Path
 from .alert import send_email_report, send_telegram_alert, send_telegram_document
 from .secrets import get_config
@@ -59,8 +60,14 @@ def collector_summary(report_data: dict, config: dict) -> list:
             continue
 
         if name not in collectors:
+            # "Not backed up" overstated this. Every archive tars the whole
+            # day's workspace, and an incremental workspace carries the last
+            # copy of everything forward — so a collector that was not due
+            # this run is still inside the archive this run produced, just
+            # not freshly fetched. Saying it was not backed up sent people
+            # looking for a gap that is not there.
             entry["status"] = "skipped"
-            entry["detail"] = "interval not reached"
+            entry["detail"] = "not due this run - archive still holds the last copy"
             summary.append(entry)
             continue
 
@@ -101,7 +108,6 @@ EXPECTED_LIMITS = (
     "no calendar",
     "no contacts",
     "has no onedrive",
-    "404",
     "403 client error",
     "failed to resolve table",
     "unavailable: 400",
@@ -111,15 +117,62 @@ EXPECTED_LIMITS = (
     "page rule",
     "rate_limits",
     "deprecated",
-    "410",
     "no sites could be listed",
     "empty",
 )
 
 
+# An HTTP status has to be matched as a status, not as three digits that
+# happen to sit inside something longer. "collected 5031 records" contains
+# "503", and "8ac429f1" contains "429" — read as substrings, both looked like
+# a service outage, which quietly filed a real failure under "the far end was
+# briefly down" where it no longer raises the headline. Word boundaries keep
+# the 503 in "HTTP 503" and reject the one in "5031".
+_STATUS_CODE = re.compile(r"\b(\d{3})\b")
+
+EXPECTED_CODES = {"404", "410"}
+TRANSIENT_CODES = {"429", "502", "503", "504"}
+
+
+def status_codes(text: str) -> set:
+    """Every three-digit number in the text that stands on its own."""
+    return set(_STATUS_CODE.findall(text))
+
+
 def is_expected_limit(message: str) -> bool:
     text = str(message).lower()
-    return any(marker in text for marker in EXPECTED_LIMITS)
+    if any(marker in text for marker in EXPECTED_LIMITS):
+        return True
+    return bool(status_codes(text) & EXPECTED_CODES)
+
+
+# A third kind of failure, between "the licence never covered this" and
+# "something is broken": the other end was briefly down. It is worth listing —
+# that data really is missing from this run — but it is not a fault here, and
+# it is usually gone by the next run without anyone touching anything.
+TRANSIENT_FAILURES = (
+    "service unavailable",
+    "server error",
+    "bad gateway",
+    "gateway timeout",
+    "timed out",
+    "timeout",
+    "temporarily",
+    "try again",
+    "connection reset",
+    "connection aborted",
+    "too many requests",
+)
+
+
+def is_transient(message: str) -> bool:
+    """Was the other end simply unavailable at the time?"""
+    text = str(message).lower()
+    if is_expected_limit(text):
+        return False
+    if status_codes(text) & TRANSIENT_CODES:
+        return True
+    return any(marker in text for marker in TRANSIENT_FAILURES)
 
 
 # Turn API errors into something a person can read. Order matters — the first
@@ -167,18 +220,62 @@ def summarise_limits(entries: list) -> list:
     return out
 
 
+def covered_elsewhere(report_data: dict) -> tuple:
+    """Markers for failures that another path already made good.
+
+    Graph's /sites endpoint answers 503 on this tenant as a standing fact,
+    and the SharePoint REST fallback collects the libraries instead. Listing
+    the Graph failure under "not collected" then describes a hole that is
+    not there — the files are in the archive, fetched the other way. Only
+    suppressed when the fallback actually produced something, so a run where
+    both paths fail still says so.
+    """
+    m365 = (report_data.get("collectors") or {}).get("m365") or {}
+    items = m365.get("items") or {}
+    covered = []
+    if (items.get("sharepoint_rest_files") or 0) > 0:
+        covered.append("no sites could be listed")
+    return tuple(covered)
+
+
+def drop_covered(messages: list, covered: tuple) -> list:
+    """Remove messages describing a failure something else already handled."""
+    if not covered:
+        return list(messages)
+    return [m for m in messages
+            if not any(c in str(m).lower() for c in covered)]
+
+
 def split_warnings(entry: dict) -> tuple:
-    """Separate 'known limitation' from 'something actually went wrong'."""
-    expected, unexpected = [], []
+    """Sort warnings into limitation, outage, and something actually wrong."""
+    expected, transient, unexpected = [], [], []
     for message in entry.get("warnings", []):
-        (expected if is_expected_limit(message) else unexpected).append(message)
-    return expected, unexpected
+        if is_expected_limit(message):
+            expected.append(message)
+        elif is_transient(message):
+            transient.append(message)
+        else:
+            unexpected.append(message)
+    return expected, transient, unexpected
+
+
+def outages(entry: dict) -> list:
+    """Things that failed because the far end was down at the time."""
+    _, transient, _ = split_warnings(entry)
+    return transient
 
 
 def real_problems(entry: dict) -> list:
-    """Errors and warnings that are genuinely worth someone's attention."""
-    _, unexpected = split_warnings(entry)
-    return list(entry.get("errors", [])) + unexpected
+    """Errors and warnings that are genuinely worth someone's attention.
+
+    An outage is deliberately not one of these. It belongs in the report —
+    the data is missing and the reader should know — but it says nothing
+    about the health of this system, and letting it drive the headline meant
+    a Microsoft hiccup announced itself as a backup that went wrong.
+    """
+    _, _, unexpected = split_warnings(entry)
+    errors = [m for m in entry.get("errors", []) if not is_transient(m)]
+    return errors + unexpected
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +343,12 @@ def credential_failures(summary: list) -> list:
 def severity(summary: list) -> str:
     """CRITICAL, WARNING or OK.
 
-    Licence limits never move this. A run that collected everything the
-    tenant is entitled to is a green run, however many things the licence
-    does not cover.
+    Neither licence limits nor upstream outages move this. A run that
+    collected everything the tenant is entitled to, and everything the far
+    end was willing to hand over that night, is a green run — however many
+    things the licence does not cover and however many services were down.
+    What is left is the set of failures that will still be there tomorrow
+    unless somebody does something.
     """
     active = [e for e in summary if e["status"] not in ("disabled", "skipped")]
     if not active:
@@ -274,19 +374,21 @@ SEVERITY_STYLE = {
 def overall_status(summary: list) -> str:
     """Derive one honest word for the whole run.
 
-    Known licence limits do not make a run 'partial' — otherwise every single
-    run is flagged and the label stops meaning anything.
+    The headline answers exactly one question: does someone need to act? A
+    licence the tenant does not own, and a Microsoft outage that will have
+    cleared by morning, both belong in the report — but neither should put
+    "with issues" on the front of it. A label that fires on the ordinary run
+    is one people learn to ignore, and then it cannot warn them about the
+    run that matters. So anything short of a genuine fault reads COMPLETED,
+    and everything that did not collect is listed underneath.
     """
     active = [e for e in summary if e["status"] not in ("disabled", "skipped")]
     if not active:
         return "NOTHING TO DO"
 
-    collected_anything = any(e["records"] for e in active)
-    problems = any(real_problems(e) for e in active)
-
-    if not collected_anything:
+    if not any(e["records"] for e in active):
         return "FAILED"
-    if problems:
+    if severity(summary) == CRITICAL:
         return "COMPLETED WITH ISSUES"
     return "COMPLETED"
 
@@ -297,6 +399,7 @@ def generate_text_report(report_data: dict, log_file_path: Path, config: dict) -
     """
     lines = []
     summary = collector_summary(report_data, config)
+    covered = covered_elsewhere(report_data)
     status = overall_status(summary)
 
     lines.append("HonestBackup Run Report")
@@ -339,9 +442,12 @@ def generate_text_report(report_data: dict, log_file_path: Path, config: dict) -
             )
             any_limits = True
             continue
-        expected, _ = split_warnings(entry)
-        for line in summarise_limits(expected):
+        expected, transient, _ = split_warnings(entry)
+        for line in summarise_limits(drop_covered(expected, covered)):
             lines.append(f"- {entry['label']}: {line}")
+            any_limits = True
+        for line in summarise_limits(drop_covered(transient, covered)):
+            lines.append(f"- {entry['label']}: {line} (service was down)")
             any_limits = True
     if not any_limits:
         lines.append("- nothing; everything available was collected")
@@ -414,7 +520,20 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
     and send it via email (with log attachment) and Telegram (as a document).
     Also sends the log file as a document via Telegram.
     """
-    print(f"[reporting] Sending backup report for {workspace_dir}", flush=True)
+    # Both to the terminal and into the run's own log file — printing alone
+    # only ever reached whoever happened to be watching a live TUI session
+    # at that exact moment. Anyone checking afterward, which is the normal
+    # case, saw nothing and had no way to tell whether email or Telegram
+    # had even been attempted, let alone whether either succeeded.
+    def note(message: str) -> None:
+        print(f"[reporting] {message}", flush=True)
+        try:
+            with open(log_file_path, "a", encoding="utf-8") as f:
+                f.write(f"[reporting] {message}\n")
+        except OSError:
+            pass
+
+    note(f"Sending backup report for {workspace_dir}")
     report_json = workspace_dir / "backup_report.json"
     if not report_json.is_file():
         raise FileNotFoundError(f"Backup report not found: {report_json}")
@@ -445,18 +564,45 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
         markdown_path.write_text(build_markdown(report_data, summary),
                                  encoding="utf-8")
     except OSError as exc:
-        print(f"[reporting] could not write {markdown_path}: {exc}", flush=True)
+        note(f"could not write {markdown_path}: {exc}")
         markdown_path = None
 
-    send_email_report(
+    # Also into the repository's own reports/ folder, under this run's
+    # backup id. Everything above only ever reaches an inbox or a phone at
+    # the moment it was sent — workspace_dir itself gets cleaned up, so
+    # without this a report exists for exactly as long as someone happens
+    # to be looking at the message that carried it. reports/ sits beside
+    # archives/, hashes/ and manifests/ inside the repository, which the
+    # existing Backblaze and office-drive sync already copies wholesale —
+    # so a report becomes as durable as the backup it describes, with
+    # nothing new to wire up on either end.
+    backup_id = (report_data.get("archive") or {}).get("backup_id")
+    if backup_id and markdown_path:
+        try:
+            from storage.config import REPOSITORY_PATH
+            reports_dir = Path(REPOSITORY_PATH) / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            (reports_dir / f"{backup_id}.md").write_text(
+                markdown_path.read_text(encoding="utf-8"), encoding="utf-8")
+            (reports_dir / f"{backup_id}.json").write_text(
+                json.dumps(report_data, indent=2), encoding="utf-8")
+            note(f"Report preserved in the repository as {backup_id}")
+        except OSError as exc:
+            note(f"could not preserve the report in the repository: {exc}")
+
+    email_sent = send_email_report(
         subject,
         text_report,
         html_body=build_html(report_data, summary),
         attachments=[str(log_file_path)] + (
             [str(markdown_path)] if markdown_path else []),
     )
+    if get_config().get('EMAIL_ENABLED', 'false').lower() == 'true':
+        note(f"Email {'sent' if email_sent else 'FAILED to send'} to "
+             f"{get_config().get('EMAIL_TO', '(no recipients set)')}")
 
     # Send Telegram notifications
+    telegram_on = get_config().get('TELEGRAM_ENABLED', 'false').lower() == 'true'
     try:
         # Telegram parses the message as HTML, so any < > & that arrives from a
         # collector — a Playwright error saying "<launching> chrome" is the one
@@ -465,6 +611,8 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
         # the <b> tags written here are meant to be markup.
         def esc(value):
             return html.escape(str(value), quote=False)
+
+        covered = covered_elsewhere(report_data)
 
         icon = {
             "COMPLETED": "✅",
@@ -506,13 +654,19 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
                     f"{esc(entry.get('detail', 'not due yet'))}"
                 )
                 continue
-            expected, _ = split_warnings(entry)
-            for line in summarise_limits(expected)[:6]:
+            expected, transient, _ = split_warnings(entry)
+            for line in summarise_limits(drop_covered(expected, covered))[:6]:
                 not_collected.append(f"• {esc(line)}")
+            # Outages sit here rather than under Problems: the data really is
+            # missing, but nothing on this side needs looking at.
+            for line in summarise_limits(drop_covered(
+                    transient + [m for m in entry.get("errors", [])
+                                 if is_transient(m)], covered))[:4]:
+                not_collected.append(f"• {esc(line)} — service was down")
 
         if not_collected:
             parts.append("")
-            parts.append("<b>Not backed up</b>")
+            parts.append("<b>Not collected this run</b>")
             parts.extend(not_collected)
 
         # --- anything that genuinely went wrong ---------------------------
@@ -549,18 +703,32 @@ def send_backup_report(workspace_dir: Path, log_file_path: Path):
         if isinstance(uploaded, list) and uploaded:
             parts.append(f"<b>Stored:</b> {esc(', '.join(map(str, uploaded)))}")
 
-        # Telegram is the glance: did it run, what came in, what needs a look.
-        # The full report and the log go by email, where there is room to read
-        # them. Only a failed run drags the log along here, because that is
-        # the one time you want it before you reach a desk.
-        send_telegram_alert("\n".join(parts))
+        # Telegram gets the glance (this message) plus the same report email
+        # gets, as a document — asked for explicitly, since email is not
+        # always somewhere convenient to check from a phone. The raw log
+        # follows on every run, not just a failed one: withholding it until
+        # something broke meant the normal answer to "show me last night's
+        # run" was nothing at all, and a log nobody can reach for is not
+        # much of a record to keep.
+        alert_sent = send_telegram_alert("\n".join(parts))
+        if telegram_on:
+            note(f"Telegram summary {'sent' if alert_sent else 'FAILED to send'}")
 
-        if status == "FAILED":
-            send_telegram_document(str(log_file_path),
-                                   caption="HonestBackup log — run failed")
+        if markdown_path:
+            doc_sent = send_telegram_document(
+                str(markdown_path), caption=f"HonestBackup report — {date_part}")
+            if telegram_on:
+                note(f"Telegram report {'sent' if doc_sent else 'FAILED to send'}")
+
+        log_sent = send_telegram_document(
+            str(log_file_path),
+            caption=("HonestBackup log — run failed" if status == "FAILED"
+                     else f"HonestBackup log — {date_part}"))
+        if telegram_on:
+            note(f"Telegram log {'sent' if log_sent else 'FAILED to send'}")
     except Exception as e:
         # Don't let telegram failures break the function; just log
-        print(f"[reporting] Failed to send Telegram notifications: {e}", flush=True)
+        note(f"Failed to send Telegram notifications: {e}")
 
 # ---------------------------------------------------------------------------
 # The report, in two shapes
@@ -570,10 +738,14 @@ def _facts(report_data: dict, summary: list) -> dict:
     started = str(report_data.get("started_at", ""))
     active = [e for e in summary if e["status"] not in ("disabled", "skipped")]
 
-    limits = []
+    covered = covered_elsewhere(report_data)
+    limits, gaps = [], []
     for entry in summary:
-        expected, _ = split_warnings(entry)
-        limits.extend(summarise_limits(expected))
+        expected, transient, _ = split_warnings(entry)
+        limits.extend(summarise_limits(drop_covered(expected, covered)))
+        gaps.extend(summarise_limits(drop_covered(
+            transient + [m for m in entry.get("errors", []) if is_transient(m)],
+            covered)))
 
     problems = []
     for entry in active:
@@ -592,58 +764,111 @@ def _facts(report_data: dict, summary: list) -> dict:
         "collected": active,
         "credentials": credential_failures(summary),
         "problems": problems,
+        # A collector that was not due, or is switched off, was silently
+        # absent from the report — leaving the reader to notice for
+        # themselves that a service they expected is simply not mentioned.
+        "idle": [
+            f"{e['label']} — " + ("turned off" if e["status"] == "disabled"
+                                  else e.get("detail", "not due this run"))
+            for e in summary if e["status"] in ("disabled", "skipped")
+        ],
+        "outages": sorted(set(gaps)),
         "limits": sorted(set(limits)),
         "archive": archive,
     }
 
 
+def headline(f: dict) -> tuple:
+    """Colour, tint, label and icon for the banner.
+
+    A green run with nothing missing says ALL GOOD. A green run that lost
+    something to an outage is still green — nothing here is broken — but
+    saying "all good" above a list of things that did not collect would be
+    the report arguing with itself, so it states what happened instead.
+    """
+    colour, tint, label, icon = SEVERITY_STYLE[f["severity"]]
+    if f["severity"] == OK and (f["outages"] or f["limits"]):
+        label = "COMPLETED"
+    return colour, tint, label, icon
+
+
 def build_markdown(report_data: dict, summary: list) -> str:
-    """The report as Markdown — attached to the email and kept on disk."""
+    """The report, laid out to be read exactly as it is written.
+
+    This file is read *raw* in both places it lands. Telegram shows a text
+    document's own characters, and no mail client renders a .md attachment
+    either. So the pipe tables and ** ** markers this used to carry never
+    once reached a renderer that would turn them into something tidy — they
+    only ever reached a person, as clutter to read past. A row like
+
+        | Notion | 4,385 | 6 | success |
+
+    is a table only in a program that draws it. Written out plainly and
+    aligned by hand it needs no such program, and the email keeps its own
+    properly styled HTML body for anyone reading it there.
+    """
     f = _facts(report_data, summary)
-    _, _, label, icon = SEVERITY_STYLE[f["severity"]]
-    out = [
-        f"# Backup report - {f['date']}",
-        "",
-        f"**{icon} {label}** - {f['status'].title()}",
-        "",
-        f"- Records collected: **{f['records']:,}**",
-    ]
+    _, _, label, icon = headline(f)
     archive = f["archive"]
+
+    when = f["date"] + (f" at {f['time']}" if f["time"] else "")
+    out = [
+        "HonestBackup - backup report",
+        when,
+        "",
+        f"  {icon}  {label}" + ("" if label.lower() == f["status"].lower()
+                                else f" - {f['status'].lower()}"),
+        "",
+        f"  {f['records']:,} records collected",
+    ]
     if archive.get("size"):
-        out.append(f"- Archive size: **{human_size(archive['size'])}**")
+        out.append(f"  {human_size(archive['size'])} archive"
+                   + (f"  ({archive['backup_id']})"
+                      if archive.get("backup_id") else ""))
     if archive.get("uploaded_to"):
-        out.append(f"- Stored in: {', '.join(archive['uploaded_to'])}")
+        out.append(f"  Stored in {', '.join(archive['uploaded_to'])}")
+
+    def block(title, lines, note=None):
+        if not lines:
+            return
+        out.extend(["", "", title.upper(), "-" * len(title), ""])
+        if note:
+            out.extend([f"  {note}", ""])
+        out.extend(f"  {line}" for line in lines)
+
+    # The urgent things first: a run is read top-down, and a licence limit
+    # that has been true for months should not sit above a credential that
+    # broke last night.
+    block("Credentials needing attention", f["credentials"],
+          "These stop collection entirely and will not fix themselves.")
+    block("Problems", f["problems"])
+
+    if f["collected"]:
+        width = max(len(e["label"]) for e in f["collected"])
+        block("What was collected", [
+            f"{e['label']:<{width}}   {e['records']:>9,} records"
+            f"   {e.get('datasets', 0):>3} datasets   {e['status']}"
+            for e in f["collected"]
+        ])
+
+    block("Not due this run", f["idle"])
+
+    block("Did not collect this run - service was down", f["outages"],
+          "The provider was unavailable at the time. Nothing to fix here; "
+          "the next run picks these up.")
+
+    block("Not collected - licence or plan limits", f["limits"],
+          "Expected, and not a fault. The tenant's licences do not "
+          "cover these.")
+
     out.append("")
-
-    if f["credentials"]:
-        out += ["## Credentials needing attention", "",
-                "These stop collection entirely and will not fix themselves.", ""]
-        out += [f"- {line}" for line in f["credentials"]] + [""]
-
-    if f["problems"]:
-        out += ["## Problems", ""] + [f"- {line}" for line in f["problems"]] + [""]
-
-    out += ["## What was collected", "",
-            "| Service | Records | Datasets | Result |",
-            "|---|---:|---:|---|"]
-    for entry in f["collected"]:
-        out.append(f"| {entry['label']} | {entry['records']:,} | "
-                   f"{entry.get('datasets', 0)} | {entry['status']} |")
-    out.append("")
-
-    if f["limits"]:
-        out += ["## Not collected - licence or plan limits", "",
-                "Expected, and not a fault. The tenant's licences do not "
-                "cover these.", ""]
-        out += [f"- {line}" for line in f["limits"]] + [""]
-
     return "\n".join(out)
 
 
 def build_html(report_data: dict, summary: list) -> str:
     """The email body. One column, large text, readable on a phone."""
     f = _facts(report_data, summary)
-    colour, tint, label, icon = SEVERITY_STYLE[f["severity"]]
+    colour, tint, label, icon = headline(f)
     archive = f["archive"]
 
     def esc(text):
@@ -704,8 +929,9 @@ def build_html(report_data: dict, summary: list) -> str:
  border-radius:10px 10px 0 0;padding:20px 22px">
  <div style="font-size:13px;letter-spacing:.08em;color:{colour};
   font-weight:700">{icon} {label}</div>
- <div style="font-size:22px;color:#111;font-weight:600;margin-top:4px">
-  {esc(f['status'].title())}</div>
+ {'' if label.lower() == f['status'].lower() else
+   f'''<div style="font-size:22px;color:#111;font-weight:600;margin-top:4px">
+  {esc(f['status'].title())}</div>'''}
  <div style="font-size:14px;color:#555;margin-top:2px">
   {esc(f['date'])}{(' at ' + esc(f['time'])) if f['time'] else ''}</div>
 </td></tr>
@@ -724,6 +950,10 @@ def build_html(report_data: dict, summary: list) -> str:
  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
   {rows}</table>
 
+ {section("Not due this run", f["idle"], "#666")}
+ {section("Did not collect this run - service was down", f["outages"], "#666",
+          "The provider was unavailable at the time. Nothing to fix here; "
+          "the next run picks these up.")}
  {section("Not collected - licence or plan limits", f["limits"], "#666",
           "Expected, and not a fault. Your licences do not cover these.")}
 </td></tr>

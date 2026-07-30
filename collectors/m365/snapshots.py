@@ -9,6 +9,7 @@ import json
 
 from . import config
 from .graph import graph_paginated_get
+from lib.jsonio import write_json
 
 
 # name -> (endpoint, needs_beta)
@@ -115,8 +116,7 @@ def collect_snapshots(headers, logger, workspace):
                 continue
 
         outfile = snapshot_dir / f"{name}.json"
-        with open(outfile, "w") as f:
-            json.dump(data, f, indent=2)
+        write_json(outfile, data)
 
         counts[name] = len(data)
         logger.success(f"Collected {len(data)}")
@@ -142,8 +142,7 @@ def collect_snapshots(headers, logger, workspace):
                 "roleTemplateId": role.get("roleTemplateId"),
                 "members": members,
             })
-        with open(snapshot_dir / "roleMembers.json", "w") as f:
-            json.dump(memberships, f, indent=2)
+        write_json(snapshot_dir / "roleMembers.json", memberships)
         counts["roleMembers"] = sum(len(m["members"]) for m in memberships)
         logger.success(f"Collected {counts['roleMembers']}")
     except Exception as e:
@@ -174,8 +173,7 @@ def collect_snapshots(headers, logger, workspace):
                 "displayName": group.get("displayName"),
                 "members": members,
             })
-        with open(snapshot_dir / "groupMembers.json", "w") as f:
-            json.dump(group_members, f, indent=2)
+        write_json(snapshot_dir / "groupMembers.json", group_members)
         counts["groupMembers"] = sum(len(g["members"]) for g in group_members)
         logger.success(f"Collected {counts['groupMembers']}")
     except Exception as e:

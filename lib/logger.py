@@ -4,6 +4,17 @@ import time
 from zoneinfo import ZoneInfo
 
 
+def display_zone():
+    """The zone every human-facing timestamp is written in.
+
+    Public alias of _display_zone — used outside this module wherever a
+    backup ID, filename, or report date needs to agree with the log lines
+    it sits next to, rather than falling back to whatever zone the
+    machine's clock happens to be set to.
+    """
+    return _display_zone()
+
+
 def _display_zone():
     """The zone log timestamps are written in.
 

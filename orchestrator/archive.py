@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 
 from storage.artifact import BackupArtifact
+from lib.logger import display_zone
 
 from .config import (
     WORKSPACE,
@@ -94,7 +95,7 @@ def build_archive(
 
     artifact = BackupArtifact(
         backup_id=backup_id,
-        created=datetime.now(),
+        created=datetime.now(display_zone()),
         archive=encrypted,
         sha256=hash_file,
         manifest=manifest,

@@ -220,7 +220,13 @@ def expired(ids: list[str], days: int, now: datetime | None = None) -> list[str]
     newest = ordered[-1]
     if days == STAGING_ONLY:
         return [backup_id for backup_id in ordered if backup_id != newest]
-    now = now or datetime.now()
+    if now is None:
+        # backup_id_date parses a naive string written in CRON_TIMEZONE
+        # (new_backup_id's doing), so the clock compared against it has to
+        # agree — a naive UTC now() here would call a backup made minutes
+        # ago "5.5 hours old" and prune it too early.
+        from lib.logger import display_zone
+        now = datetime.now(display_zone()).replace(tzinfo=None)
     cutoff = now - timedelta(days=days)
     out = []
     for backup_id in ordered:

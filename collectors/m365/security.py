@@ -17,6 +17,7 @@ import json
 
 from . import config
 from .graph import graph_paginated_get, graph_post
+from lib.jsonio import write_json
 
 
 # name -> (endpoint, description)
@@ -81,8 +82,7 @@ def collect_security(headers, logger, workspace):
             warnings.append(message)
             continue
 
-        with open(security_dir / f"{name}.json", "w") as f:
-            json.dump(data, f, indent=2)
+        write_json(security_dir / f"{name}.json", data)
 
         counts[name] = len(data)
         logger.success(f"Collected {len(data)}")
@@ -107,8 +107,7 @@ def collect_security(headers, logger, workspace):
             continue
 
         results = response.get("results", [])
-        with open(hunting_dir / f"{name}.json", "w") as f:
-            json.dump(results, f, indent=2)
+        write_json(hunting_dir / f"{name}.json", results)
 
         counts[name] = len(results)
         logger.success(f"Collected {len(results)}")

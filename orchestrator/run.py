@@ -77,10 +77,18 @@ def restore_backup_command(backup_id: str, restore_dir: str, private_key: str, f
         exit(1)
 
 
-def get_previous_workspace(workspace_root: Path) -> Path | None:
-    """Return the most recent YYYY-MM-DD directory under workspace_root, or None."""
+def get_previous_workspace(workspace_root: Path,
+                           exclude: str | None = None) -> Path | None:
+    """Return the most recent YYYY-MM-DD directory under workspace_root, or None.
+
+    `exclude` leaves one date out, which today's caller needs: today's own
+    directory sorts newest of all, so a run asking "what came before me?"
+    is otherwise handed itself.
+    """
     try:
-        dirs = [d for d in workspace_root.iterdir() if d.is_dir() and len(d.name) == 10 and d.name[4] == '-']
+        dirs = [d for d in workspace_root.iterdir()
+                if d.is_dir() and len(d.name) == 10 and d.name[4] == '-'
+                and d.name != exclude]
         if not dirs:
             return None
         # Sort by name (lexicographic works for YYYY-MM-DD)
@@ -94,9 +102,28 @@ def create_incremental_workspace(workspace_root: Path, today: str) -> Path:
     """Create a new workspace directory for today using hardlinks from the most recent previous workspace.
     Returns the path to the new workspace directory."""
     new_dir = workspace_root / today
+
+    # Yesterday's workspace has to be found *before* today's is created.
+    # get_previous_workspace picks the newest dated directory it can see, and
+    # today's — just made, empty — sorts newest of all. Creating it first meant
+    # every run hardlinked from itself, carried nothing forward, and re-fetched
+    # every file from scratch: --incremental was on and doing nothing.
+    prev = get_previous_workspace(workspace_root, exclude=today)
+
+    # A second run on the same day already holds today's fresher copy. Laying
+    # yesterday's over it would undo the morning's work, so the carry-forward
+    # only happens when today's workspace is genuinely new.
+    #
+    # "New" ignores logs/: a run that died early — before any collector wrote
+    # anything — still left its log directory behind, and counting that as
+    # "today already has data" made the next run inherit nothing and re-fetch
+    # every file. A folder holding only the record of a failure is still empty
+    # of backup.
+    present = {p.name for p in new_dir.iterdir()} if new_dir.is_dir() else set()
+    starting_fresh = not (present - {"logs"})
+
     new_dir.mkdir(parents=True, exist_ok=True)
-    prev = get_previous_workspace(workspace_root)
-    if prev and prev.exists():
+    if prev and prev.exists() and starting_fresh:
         # Use cp -al to hardlink everything
         try:
             subprocess.run(
@@ -306,7 +333,15 @@ def main():
     backup_id = new_backup_id()
     today = backup_id[:10]
 
-    session = BackupSession(backup_id=backup_id, started=datetime.now())
+    # Collectors that keep a cumulative file also write one named for this
+    # run alone. Published here rather than threaded through every collector
+    # signature, since it is a fact about the run, not an argument to any
+    # particular collection step.
+    os.environ["HONESTBACKUP_RUN_ID"] = backup_id
+
+    from lib.logger import display_zone
+
+    session = BackupSession(backup_id=backup_id, started=datetime.now(display_zone()))
     executed_collectors = 0
     scheduler = Scheduler()
 

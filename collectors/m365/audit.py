@@ -1,7 +1,9 @@
 import json
+import os
 
 from . import config
 from .graph import graph_paginated_get
+from lib.jsonio import merge_records, write_json
 from .state import load_state
 from .state import save_state
 
@@ -69,9 +71,16 @@ def collect_audit(headers, logger, workspace):
 
         data = graph_paginated_get(url, headers)
 
+        # Checkpointed, so `data` holds only what appeared since the last run.
+        # Written straight out it replaced the file, and an archive taken
+        # after a quiet ten minutes kept ten minutes of audit history in place
+        # of the days already collected. Merged, the file stays cumulative;
+        # the per-run copy beside it still shows this run alone.
         outfile = audit_dir / f"{dataset}.json"
-        with open(outfile, "w") as f:
-            json.dump(data, f, indent=2)
+        write_json(outfile, merge_records(outfile, data, key_fields=("id",)))
+        run_id = os.environ.get("HONESTBACKUP_RUN_ID")
+        if run_id:
+            write_json(audit_dir / f"{dataset}_run_{run_id}.json", data)
 
         count = len(data)
         logger.info(f"Collected {count}")

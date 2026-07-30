@@ -10,10 +10,15 @@
 #
 #   ./get-tools.sh              tools for the machine this runs on
 #   ./get-tools.sh --all        tools for macOS and Linux, both chips
-#   ./get-tools.sh --with-key   also copy the private key onto the drive
 #
 # Run it once, on any machine with a network. The drive then works
 # everywhere.
+#
+# The private key is never part of this. It opens every backup on the
+# drive, so a copy of it travelling with the drive would mean a lost or
+# stolen drive is a readable copy of everything — the archives are
+# encrypted specifically to prevent that. Browse or Menu asks for the key
+# each time it is needed instead; nothing about it is ever written here.
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,13 +34,11 @@ RCLONE_VERSION="v1.68.2"
 AGE_VERSION="v1.2.1"
 ZSTD_VERSION="v1.5.6"
 
-WANT_KEY=false
 ALL_PLATFORMS=false
 for arg in "$@"; do
     case "$arg" in
-        --with-key) WANT_KEY=true ;;
         --all)      ALL_PLATFORMS=true ;;
-        -h|--help)  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)          die "I do not know the option $arg" ;;
     esac
 done
@@ -177,37 +180,6 @@ if $ALL_PLATFORMS; then
 else
     install_for "$THIS_OS" "$THIS_ARCH"
     echo
-fi
-
-# ---------------------------------------------------------------------------
-# the private key
-#
-# Without it the archives on the drive cannot be read at all. With it, a
-# lost drive is a readable copy of everything the company backs up. That
-# is a real trade and not one to make by accident, so it takes a flag.
-# ---------------------------------------------------------------------------
-if $WANT_KEY; then
-    SOURCE="${HONESTBACKUP_KEY:-$HERE/../config/keys/archive.key}"
-    if [[ -f "$SOURCE" ]]; then
-        mkdir -p "$HERE/keys"
-        cp "$SOURCE" "$HERE/keys/archive.key"
-        chmod 600 "$HERE/keys/archive.key"
-        ok "private key copied to keys/archive.key"
-        echo
-        echo "  ${YELLOW}This drive can now read every backup on it.${OFF}"
-        echo "  ${DIM}Anyone who picks it up can too. Keep it locked away,"
-        echo "  and use a drive with hardware encryption if you have one.${OFF}"
-    else
-        warn "no key at $SOURCE — set HONESTBACKUP_KEY to point at one"
-    fi
-else
-    if [[ -f "$HERE/keys/archive.key" ]]; then
-        ok "private key already on the drive"
-    else
-        echo "  ${DIM}No private key on the drive, so the archives can be"
-        echo "  carried and verified but not read. To read them here:${OFF}"
-        echo "      ./get-tools.sh --with-key"
-    fi
 fi
 
 echo

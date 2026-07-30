@@ -33,6 +33,7 @@ from .sharepoint_rest import collect_sharepoint_rest
 from .teams import collect_teams
 from .onedrive import collect_onedrive_for_user
 from .files import download_message_attachments
+from lib.jsonio import write_json
 
 
 def _settings():
@@ -212,8 +213,7 @@ def collect(workspace, logger):
         # the account is deleted.
         users_dir = workspace / "users"
         users_dir.mkdir(parents=True, exist_ok=True)
-        with open(users_dir / "_users.json", "w") as f:
-            json.dump(users, f, indent=2)
+        write_json(users_dir / "_users.json", users)
         stats["items"]["users"] = len(users)
 
         mailbox_resources = [
@@ -247,8 +247,7 @@ def collect(workspace, logger):
                     )
 
                     if data:
-                        with open(user_dir / f"{resource_name}.json", "w") as f:
-                            json.dump(data, f, indent=2)
+                        write_json(user_dir / f"{resource_name}.json", data)
                         log("info",
                             f"Saved {len(data)} {description} for {user_label}")
 
@@ -290,8 +289,7 @@ def collect(workspace, logger):
                 if warning:
                     stats["warnings"].append(warning)
                 if index:
-                    with open(user_dir / "onedrive_index.json", "w") as f:
-                        json.dump(index, f, indent=2)
+                    write_json(user_dir / "onedrive_index.json", index)
                     stats["items"][f"onedrive_{user_id}"] = \
                         drive_stats.get("downloaded", 0)
                     log("info",

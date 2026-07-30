@@ -48,6 +48,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
+    Checkbox,
     ContentSwitcher,
     DataTable,
     DirectoryTree,
@@ -388,6 +389,22 @@ def log_display_name(path: Path) -> str:
 def colorize(line: str) -> str:
     text = escape(line)
     low = line.lower()
+    # A line's own [WARNING]/[ERROR] tag is what the logger actually meant
+    # by it, and wins over guessing from the words in the message — a
+    # WARNING that merely quotes an HTTP exception ("403 Client Error:
+    # Forbidden") was still handled and skipped, not a failure, and used
+    # to paint red purely because the word "error" appears inside a
+    # message it was reporting on, not causing.
+    if re.search(r"\[(error|critical)\]", low):
+        return f"[{RED}]{text}[/]"
+    if re.search(r"\[warning\]", low):
+        return f"[{YELLOW}]{text}[/]"
+    if re.search(r"\[success\]", low):
+        return f"[{GREEN}]{text}[/]"
+    if re.search(r"\[(debug|info)\]", low):
+        return f"[{WHITE}]{text}[/]"
+    # No recognisable tag — raw subprocess/tool output, banners, progress
+    # lines. Fall back to guessing from the words, same as before.
     if "traceback" in low or "error" in low or "failed" in low or "critical" in low:
         return f"[{RED}]{text}[/]"
     if "warn" in low:
@@ -717,7 +734,7 @@ MENU_ITEMS: list[tuple[str, str, str]] = [
     ("logs", "Logs & reports", "Read what happened during past backup runs"),
     ("browse", "Read backed-up data", "Open restored files — JSON shown in a clean viewer"),
     ("schedule", "Scheduling", "Choose what gets backed up, and how often"),
-    ("recipients", "Who gets told", "Email addresses and Telegram chats for reports"),
+    ("recipients", "Alerting", "Email addresses and Telegram chats for reports"),
     ("notion", "Notion sign-in", "Sign the Notion backup into an account"),
     ("settings", "Settings", "Storage, notifications and other options"),
     ("credentials", "API keys & passwords", "Add or change the credentials the backup uses"),
@@ -925,47 +942,88 @@ class ActivityScreen(NavScreen):
 # Backup options (how to run the backup)
 # ======================================================================
 class BackupOptionsScreen(NavModal):
-    """Ask how the backup should run, in plain words."""
+    """Ask which services and how the backup should run, in plain words."""
 
     BINDINGS = [Binding("escape", "close", "Close", priority=True)]
 
     def compose(self) -> ComposeResult:
+        cfg = read_kv_file(CONF_PATH)
         with Vertical(id="backup-options-dialog", classes="dialog"):
-            yield Static("[b]BACK UP NOW[/b] · How would you like to run it?",
-                         classes="dialog-title")
+            yield Static("[b]BACK UP NOW[/b]", classes="dialog-title")
+
             with Vertical(id="backup-options-list"):
                 yield Button(
-                    "Back up everything now   (recommended)",
+                    "Back up now   (recommended)",
                     id="opt-force", variant="primary",
                 )
                 yield Static(
-                    f"[{MUTED}]Backs up every service that is turned on, "
-                    f"even if it ran recently.[/]\n", classes="option-note",
+                    f"[{MUTED}]Runs the services ticked below, even if they "
+                    f"ran recently.[/]", classes="option-note",
                 )
+
+                # The tick list belongs under the button it governs. As three
+                # bare toggles above the title, nothing said what they applied
+                # to — a switch with no sentence around it only reads as on or
+                # off, never as on or off *for what*.
+                yield Static("[b]Include[/b]", classes="include-title")
+                with Vertical(id="backup-services-list"):
+                    for label, enable_key, service_id in SERVICES:
+                        is_on = cfg.get(enable_key, "false").lower() == "true"
+                        yield Checkbox(
+                            label if is_on
+                            else f"{label}   (turned off in Settings)",
+                            value=is_on, disabled=not is_on,
+                            id=f"svc-{service_id}",
+                        )
+
+                yield Static("\n[b]Other ways to run it[/]",
+                             classes="dialog-title")
                 yield Button("Back up only what is due", id="opt-due")
                 yield Static(
-                    f"[{MUTED}]Follows your schedule — services backed up "
-                    f"recently are skipped.[/]\n", classes="option-note",
+                    f"[{MUTED}]Follows your schedule — anything backed up "
+                    f"recently is skipped.[/]", classes="option-note",
                 )
                 yield Button("Space-saving backup", id="opt-incremental")
                 yield Static(
-                    f"[{MUTED}]Backs up everything, but stores only what "
-                    f"changed since last time.[/]\n", classes="option-note",
+                    f"[{MUTED}]Stores only what changed since last time.[/]",
+                    classes="option-note",
                 )
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Cancel", id="opt-cancel", variant="error")
 
+    def _selected_services(self) -> list[str]:
+        """Which service ids are checked. Empty means none were."""
+        chosen = [
+            service_id for _, _, service_id in SERVICES
+            if self.query_one(f"#svc-{service_id}", Checkbox).value
+        ]
+        if not chosen:
+            self.notify("Tick at least one service before starting.",
+                        title="Back up now", severity="warning")
+        return chosen
+
     @on(Button.Pressed, "#opt-force")
     def _force(self) -> None:
-        self.dismiss("force")
+        self._dismiss_with("force")
 
     @on(Button.Pressed, "#opt-due")
     def _due(self) -> None:
-        self.dismiss("due")
+        self._dismiss_with("due")
 
     @on(Button.Pressed, "#opt-incremental")
     def _incremental(self) -> None:
-        self.dismiss("incremental")
+        self._dismiss_with("incremental")
+
+    def _dismiss_with(self, mode: str) -> None:
+        chosen = self._selected_services()
+        if not chosen:
+            return
+        # Only narrow with --only when something was actually deselected;
+        # everything checked is indistinguishable from not asking at all.
+        available = [sid for _, key, sid in SERVICES
+                    if not self.query_one(f"#svc-{sid}", Checkbox).disabled]
+        only = None if sorted(chosen) == sorted(available) else chosen
+        self.dismiss({"mode": mode, "only": only})
 
     @on(Button.Pressed, "#opt-cancel")
     def _cancel(self) -> None:
@@ -2311,7 +2369,7 @@ class RecipientsScreen(NavScreen):
 
     def compose(self) -> ComposeResult:
         cfg = read_kv_file(CONF_PATH)
-        yield TitleBar("Who gets told")
+        yield TitleBar("Alerting")
         with VerticalScroll(id="recipients-body"):
             yield Static(
                 f"\n[b {CYAN}]Email — the full report[/]\n"
@@ -2383,7 +2441,7 @@ class RecipientsScreen(NavScreen):
     async def _add(self, kind: str, placeholder: str) -> None:
         listing = self.query_one(f"#list-{kind}", Vertical)
         if len(listing.query(f".r-{kind}")) >= 20:
-            self.notify("Twenty recipients is plenty.", title="Who gets told",
+            self.notify("Twenty recipients is plenty.", title="Alerting",
                         severity="warning")
             return
         row = recipient_row(kind, "", placeholder)
@@ -2425,25 +2483,25 @@ class RecipientsScreen(NavScreen):
         for address in addresses:
             if not looks_like_email(address):
                 self.notify(f"'{address}' does not look like an email address.",
-                            title="Who gets told", severity="error")
+                            title="Alerting", severity="error")
                 return None
         for chat_id in chat_ids:
             if not looks_like_chat_id(chat_id):
                 self.notify(
                     f"'{chat_id}' is not a chat id. They are numbers — "
                     f"message @userinfobot to find yours.",
-                    title="Who gets told", severity="error")
+                    title="Alerting", severity="error")
                 return None
 
         # Switching a channel on with nobody to send to is a silent no-op at
         # run time, so it is worth catching here instead.
         if email_on and not addresses:
             self.notify("Email is on, but nobody is listed to receive it.",
-                        title="Who gets told", severity="error")
+                        title="Alerting", severity="error")
             return None
         if telegram_on and not chat_ids:
             self.notify("Telegram is on, but no chat is listed.",
-                        title="Who gets told", severity="error")
+                        title="Alerting", severity="error")
             return None
 
         return {
@@ -2462,7 +2520,7 @@ class RecipientsScreen(NavScreen):
         try:
             save_conf_values(CONF_PATH, updates)
         except OSError as exc:
-            self.notify(f"Could not save: {exc}", title="Who gets told",
+            self.notify(f"Could not save: {exc}", title="Alerting",
                         severity="error")
             return
         people = len(split_list(updates["EMAIL_TO"]))
@@ -2471,7 +2529,7 @@ class RecipientsScreen(NavScreen):
             f"Saved. Reports go to {people} "
             f"address{'es' if people != 1 else ''}, "
             f"summaries to {chats} chat{'s' if chats != 1 else ''}.",
-            title="Who gets told",
+            title="Alerting",
         )
         self.app.pop_screen()
 
@@ -2484,10 +2542,10 @@ class RecipientsScreen(NavScreen):
         try:
             save_conf_values(CONF_PATH, updates)
         except OSError as exc:
-            self.notify(f"Could not save: {exc}", title="Who gets told",
+            self.notify(f"Could not save: {exc}", title="Alerting",
                         severity="error")
             return
-        self.notify("Sending…", title="Who gets told")
+        self.notify("Sending…", title="Alerting")
         self._send_test()
 
     @work(thread=True)
@@ -2512,19 +2570,19 @@ class RecipientsScreen(NavScreen):
         def report() -> None:
             if not results:
                 self.notify("Both channels are switched off — nothing sent.",
-                            title="Who gets told", severity="warning")
+                            title="Alerting", severity="warning")
                 return
             failed = [name for name, ok in results if not ok]
             if failed:
                 self.notify(
                     f"{', '.join(failed)} did not go out. "
                     f"Check the credentials in API keys & passwords.",
-                    title="Who gets told", severity="error", timeout=10,
+                    title="Alerting", severity="error", timeout=10,
                 )
             else:
                 self.notify(
                     f"{' and '.join(name for name, _ in results)} sent.",
-                    title="Who gets told",
+                    title="Alerting",
                 )
 
         self.app.call_from_thread(report)
@@ -3096,7 +3154,7 @@ SETTING_SECTIONS: list[tuple[str, list[SettingField]]] = [
         SettingField("USB_LABEL", "USB drive label"),
         SettingField("USB_BACKUP_PATH", "Folder on the USB drive"),
     ]),
-    # Who receives what lives on its own screen — "Who gets told" — so the
+    # Who receives what lives on its own screen — "Alerting" — so the
     # addresses are not buried among the server settings that carry them.
     ("Notifications", [
         SettingField("TELEGRAM_ENABLED", "Telegram messages", "switch"),
@@ -3666,7 +3724,7 @@ to the buttons underneath.[/]
   [{WHITE}]Read backed-up data[/]  Browse collected or restored files
   [{WHITE}]Scheduling[/]           What runs, at which times, and how long
                         each copy is kept
-  [{WHITE}]Who gets told[/]        Email addresses and Telegram chats, and a
+  [{WHITE}]Alerting[/]             Email addresses and Telegram chats, and a
                         test button to prove both work
   [{WHITE}]Settings[/]             Storage, notifications, log detail
   [{WHITE}]API keys & passwords[/] Add or change stored credentials
@@ -3725,16 +3783,21 @@ class HonestbackupTUI(App):
         self.push_screen(HomeScreen())
 
     # -- job control -----------------------------------------------------
-    def backup_mode_chosen(self, mode: str | None) -> None:
-        if mode is None:
+    def backup_mode_chosen(self, choice: dict | None) -> None:
+        if choice is None:
             return
+        mode = choice["mode"]
+        only = choice.get("only")
         argv = [sys.executable, "-u", "-m", "orchestrator.run"]
         if mode == "force":
             argv.append("--force")
         elif mode == "incremental":
             argv += ["--force", "--incremental"]
         # "due" adds no flags — the orchestrator follows the schedule.
-        self.start_job("Backing up", argv)
+        if only:
+            argv += ["--only", ",".join(only)]
+        label = "Backing up" if not only else f"Backing up ({', '.join(only)})"
+        self.start_job(label, argv)
 
     def restore_confirmed(self, plan: dict | None) -> None:
         if not plan:
@@ -4003,6 +4066,10 @@ class HonestbackupTUI(App):
     #backup-detail-body {{ height: 1fr; padding: 0 3; }}
     #contents-log {{ height: 1fr; margin: 1 2; background: {BLACK}; border: none; }}
     #backup-options-dialog {{ height: auto; max-height: 90%; width: 76; }}
+    #backup-services-list {{ height: auto; padding: 0 0 1 1; }}
+    #backup-services-list Checkbox {{ width: 100%; margin: 0; border: none;
+                                      background: transparent; }}
+    .include-title {{ padding: 1 1 0 1; }}
     #backup-options-list {{ height: auto; }}
     #backup-options-list Button {{ width: 100%; margin: 0; }}
     .option-note {{ padding: 0 1 1 1; }}

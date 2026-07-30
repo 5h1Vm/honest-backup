@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # Put the whole office copy onto the external drive itself: the scripts, a
-# copy of rclone, the remote definition, and a launcher you can double-click.
+# copy of rclone, the remote definition, and launchers you can double-click.
 #
-# After this, the drive works on any Linux machine with Python — plug it in,
-# double-click, done. Nothing is left behind on the laptop.
+# After this, the drive works on any Linux or Mac machine with Python —
+# plug it in, double-click, done. Nothing is left behind on the laptop.
 #
 #   ./install-to-drive.sh /media/you/DriveName
 #
@@ -14,9 +14,12 @@
 #   finder read access to the whole bucket — which is exactly what the
 #   encrypted archives were meant to prevent.
 #
-#   So this script insists on one of two things:
-#     - an rclone config password (the config is encrypted on the drive), or
-#     - --no-credentials, which leaves the remote on the laptop instead.
+#   So this script insists on one of three things:
+#     - an rclone config password (the config is encrypted on the drive),
+#     - --no-credentials, which leaves the remote on the laptop instead, or
+#     - --plaintext-credentials, an explicit "I accept the risk" for a
+#       drive that needs to work on any machine with no password prompt
+#       at all — the key travels in the open.
 
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -27,11 +30,18 @@ ok(){ echo "  ${GREEN}✓${OFF} $*"; }
 warn(){ echo "  ${YELLOW}!${OFF} $*"; }
 die(){ echo; echo "  ${RED}Stopped:${OFF} $*"; echo; exit 1; }
 
-DRIVE="${1:-}"
-DRIVE="${DRIVE%/}"          # a trailing slash makes every path look like a//b
 NO_CREDS=false
-[[ "${2:-}" == "--no-credentials" || "${1:-}" == "--no-credentials" ]] && NO_CREDS=true
-[[ "$DRIVE" == "--no-credentials" ]] && DRIVE="${2:-}"
+PLAINTEXT_OK=false
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --no-credentials)      NO_CREDS=true ;;
+        --plaintext-credentials) PLAINTEXT_OK=true ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+DRIVE="${ARGS[0]:-}"
+DRIVE="${DRIVE%/}"          # a trailing slash makes every path look like a//b
 
 [[ -n "$DRIVE" ]] || die "Give me the drive's mount point.
      Find it with:  lsblk -o NAME,LABEL,SIZE,MOUNTPOINT
@@ -40,12 +50,18 @@ NO_CREDS=false
 [[ -d "$DRIVE" ]] || die "$DRIVE does not exist. Is the drive mounted?"
 [[ -w "$DRIVE" ]] || die "$DRIVE is not writable by $USER."
 
+# Three folders, three jobs, nothing loose:
+#
+#   HonestBackup/
+#     README.md          what this is, in one page
+#     Backups/            the data — this is what someone is actually
+#                          looking for when they open this drive
+#     Scripts/             everything that makes the data arrive here.
+#                          Nobody needs to open this folder to use the
+#                          drive; it exists so the launchers have
+#                          something to run.
 TOOL="$DRIVE/HonestBackup"
-# The backups themselves live one level inside the HonestBackup folder,
-# not loose at the drive's root — a drive is Finder-browsed as often as
-# it is scripted, and archives/hashes/manifests/reports/metadata sitting
-# next to volume icons and the scripts is not what "easy to navigate"
-# looks like. One folder in, everything has a place.
+ENGINE="$TOOL/Scripts"
 DATA="$TOOL/Backups"
 
 # Run under sudo, $HOME is /root and the rclone config is not there. Work out
@@ -65,13 +81,14 @@ echo
 # ---------------------------------------------------------------------------
 # the scripts
 # ---------------------------------------------------------------------------
-mkdir -p "$TOOL" "$DATA" || die "could not create $TOOL"
+mkdir -p "$ENGINE" "$DATA" || die "could not create $ENGINE"
 for f in pull.py view.py reseed.py copy-now.sh sync.command get-tools.sh \
-         HonestBackup.command pull.conf.example README.md; do
-    cp "$HERE/$f" "$TOOL/" || die "could not copy $f"
+         HonestBackup.command pull.conf.example; do
+    cp "$HERE/$f" "$ENGINE/" || die "could not copy $f"
 done
-chmod +x "$TOOL"/*.sh "$TOOL"/*.py "$TOOL"/*.command 2>/dev/null
-ok "scripts copied to $TOOL"
+cp "$HERE/README.md" "$TOOL/README.md" || die "could not copy README.md"
+chmod +x "$ENGINE"/*.sh "$ENGINE"/*.py "$ENGINE"/*.command 2>/dev/null
+ok "scripts tucked into $ENGINE, out of the way of the backups themselves"
 
 # ---------------------------------------------------------------------------
 # four launchers at the very top of the drive — two platforms, two speeds
@@ -81,80 +98,94 @@ ok "scripts copied to $TOOL"
 #                           knows what they want
 #
 # Each is a stub, not a second copy of the real script: the real ones stay
-# inside HonestBackup/, where they can find pull.py and tools/ beside
-# them. Deleting one of these four and double-clicking the folder still
-# works — they are convenience, not the only way in.
+# inside Scripts/, where they can find pull.py and tools/ beside them.
+# Deleting one of these four and going into HonestBackup/Scripts/ directly
+# still works — they are convenience, not the only way in.
 # ---------------------------------------------------------------------------
 cat > "$DRIVE/Menu Mac.command" <<'STUB'
 #!/bin/bash
-cd "$(dirname "${BASH_SOURCE[0]}")/HonestBackup" && exec ./HonestBackup.command
+cd "$(dirname "${BASH_SOURCE[0]}")/HonestBackup/Scripts" && exec ./HonestBackup.command
 STUB
 chmod +x "$DRIVE/Menu Mac.command"
 
 cat > "$DRIVE/Sync Mac.command" <<'STUB'
 #!/bin/bash
-cd "$(dirname "${BASH_SOURCE[0]}")/HonestBackup" && exec ./sync.command
+cd "$(dirname "${BASH_SOURCE[0]}")/HonestBackup/Scripts" && exec ./sync.command
 STUB
 chmod +x "$DRIVE/Sync Mac.command"
 
-# Exec takes an absolute path, resolved here and now — %k is a URI, not a
-# path, and dirname on it produces garbage, so it does not do what it
-# looks like it does. This is the same tradeoff pull.conf's DESTINATION
-# already makes: fixed to where the drive is mounted right now, and fixed
-# again by re-running this script if that ever changes.
-cat > "$DRIVE/Menu Linux.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Version=1.0
-Name=Menu Linux
-Comment=Choose what to do with this drive
-Icon=drive-harddisk
-Terminal=true
-Path=$TOOL
-Exec="$TOOL/HonestBackup.command"
-Categories=Utility;Archiving;
-EOF
-chmod +x "$DRIVE/Menu Linux.desktop"
+# .desktop files were tried here first and dropped: how a file manager
+# handles one is not standard the way the freedesktop spec implies. On
+# one real machine tested against, Thunar tried to add "Sync Linux.desktop"
+# as an XFCE PANEL PLUGIN on double-click instead of running it, and a
+# second launch path handed the file's raw text straight to bash, which
+# choked reading "[Desktop Entry]" as a command. GNOME, XFCE and whatever
+# hybrid a given Linux machine runs do not agree on what a .desktop file
+# double-click means. A shebang script is not ambiguous anywhere — it is
+# what a shell runs, full stop — so that is what these are instead, the
+# same convention already used for .command on macOS.
+cat > "$DRIVE/Menu Linux.sh" <<'STUB'
+#!/bin/bash
+cd "$(dirname "${BASH_SOURCE[0]}")/HonestBackup/Scripts" && exec ./HonestBackup.command
+STUB
+chmod +x "$DRIVE/Menu Linux.sh"
 
-cat > "$DRIVE/Sync Linux.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Version=1.0
-Name=Sync Linux
-Comment=Bring the latest backups down from Backblaze
-Icon=drive-harddisk
-Terminal=true
-Path=$TOOL
-Exec="$TOOL/copy-now.sh"
-Categories=Utility;Archiving;
-EOF
-chmod +x "$DRIVE/Sync Linux.desktop"
+cat > "$DRIVE/Sync Linux.sh" <<'STUB'
+#!/bin/bash
+cd "$(dirname "${BASH_SOURCE[0]}")/HonestBackup/Scripts" && exec ./copy-now.sh
+STUB
+chmod +x "$DRIVE/Sync Linux.sh"
 
-for launcher in "Menu Linux.desktop" "Sync Linux.desktop"; do
+# Leftovers from an older install of this same drive would otherwise sit
+# there confusing things forever.
+rm -f "$DRIVE/Menu Linux.desktop" "$DRIVE/Sync Linux.desktop"
+rm -f "$TOOL/pull.py" "$TOOL/view.py" "$TOOL/reseed.py" "$TOOL/copy-now.sh" \
+      "$TOOL/sync.command" "$TOOL/get-tools.sh" "$TOOL/HonestBackup.command" \
+      "$TOOL/pull.conf.example"
+[[ -d "$TOOL/tools" && ! -d "$ENGINE/tools" ]] && mv "$TOOL/tools" "$ENGINE/tools"
+# A key from an older install that did copy one onto the drive — the
+# policy now is that the key never lives here, so this removes it rather
+# than carrying it forward.
+if [[ -d "$TOOL/keys" ]]; then
+    rm -rf "$TOOL/keys"
+    warn "removed a private key found on the drive from an older install"
+fi
+if [[ -d "$ENGINE/keys" ]]; then
+    rm -rf "$ENGINE/keys"
+    warn "removed a private key found on the drive from an older install"
+fi
+[[ -f "$TOOL/pull.conf" && ! -f "$ENGINE/pull.conf" ]] && mv "$TOOL/pull.conf" "$ENGINE/pull.conf"
+[[ -f "$TOOL/rclone.conf" && ! -f "$ENGINE/rclone.conf" ]] && mv "$TOOL/rclone.conf" "$ENGINE/rclone.conf"
+
+for launcher in "Menu Mac.command" "Sync Mac.command" "Menu Linux.sh" "Sync Linux.sh"; do
     command -v gio >/dev/null 2>&1 && \
         gio set "$DRIVE/$launcher" metadata::trusted true 2>/dev/null
 done
 ok "four launchers placed at the top of the drive"
-echo "      ${DIM}Menu Mac.command    Sync Mac.command${OFF}"
-echo "      ${DIM}Menu Linux.desktop  Sync Linux.desktop${OFF}"
+echo "      ${DIM}Menu Mac.command   Sync Mac.command${OFF}"
+echo "      ${DIM}Menu Linux.sh      Sync Linux.sh${OFF}"
+echo "      ${DIM}A Linux file manager may ask once whether to run or view"
+echo "      a .sh file — choose Run. That choice is usually remembered.${OFF}"
 
 # ---------------------------------------------------------------------------
 # rclone, so the drive does not depend on the machine having it
 # ---------------------------------------------------------------------------
 SYSTEM_RCLONE="$(command -v rclone || true)"
 if [[ -n "$SYSTEM_RCLONE" ]]; then
-    mkdir -p "$TOOL/tools"
-    cp "$SYSTEM_RCLONE" "$TOOL/tools/rclone" && chmod +x "$TOOL/tools/rclone"
-    ok "rclone carried along ($("$TOOL/tools/rclone" version | head -1))"
+    mkdir -p "$ENGINE/tools"
+    cp "$SYSTEM_RCLONE" "$ENGINE/tools/rclone" && chmod +x "$ENGINE/tools/rclone"
+    ok "rclone carried along ($("$ENGINE/tools/rclone" version | head -1))"
 else
     warn "no rclone to copy — the drive will need one on the machine it is used on"
 fi
 
-# That rclone only runs on machines like this one. For a drive that also
-# has to open on the office Mac, get-tools.sh fetches a binary per
-# platform; say so rather than letting it fail there.
-echo "  ${DIM}For a drive that must also work on macOS:${OFF}"
-echo "  ${DIM}  $TOOL/get-tools.sh --all${OFF}"
+# That rclone only runs on machines like this one, and age/zstd are not
+# carried at all yet. For a drive that must also open on the office Mac,
+# get-tools.sh --all fetches a full set per platform; say so rather than
+# letting it fail there with only rclone present.
+echo "  ${DIM}For a drive that must also work on macOS, or to read backups"
+echo "  from this drive rather than only carry them:${OFF}"
+echo "      $ENGINE/get-tools.sh --all"
 
 # ---------------------------------------------------------------------------
 # the remote definition
@@ -165,8 +196,12 @@ if $NO_CREDS; then
     warn "the drive will only work on machines that have the remote configured"
 elif [[ -f "$LAPTOP_CONF" ]]; then
     if grep -q "^RCLONE_ENCRYPT_V0:" "$LAPTOP_CONF" 2>/dev/null; then
-        cp "$LAPTOP_CONF" "$TOOL/rclone.conf"; chmod 600 "$TOOL/rclone.conf"
+        cp "$LAPTOP_CONF" "$ENGINE/rclone.conf"; chmod 600 "$ENGINE/rclone.conf"
         ok "remote copied to the drive (already encrypted)"
+    elif $PLAINTEXT_OK; then
+        cp "$LAPTOP_CONF" "$ENGINE/rclone.conf"; chmod 600 "$ENGINE/rclone.conf"
+        warn "remote copied to the drive UNENCRYPTED (--plaintext-credentials)"
+        warn "anyone who finds this drive can read the whole Backblaze bucket"
     else
         echo
         echo "  ${YELLOW}The remote definition holds your Backblaze key.${OFF}"
@@ -176,7 +211,8 @@ elif [[ -f "$LAPTOP_CONF" ]]; then
         echo "    rclone config          →  s) Set configuration password"
         echo
         echo "  ${DIM}Then run this again. Or use --no-credentials to keep the"
-        echo "  remote on the laptop only.${OFF}"
+        echo "  remote on the laptop only, or --plaintext-credentials to copy"
+        echo "  it as-is and accept that risk.${OFF}"
         die "refusing to copy an unencrypted key onto a portable drive"
     fi
 else
@@ -186,15 +222,15 @@ fi
 # ---------------------------------------------------------------------------
 # configuration, pointed at the drive it lives on
 # ---------------------------------------------------------------------------
-if [[ -f "$TOOL/pull.conf" ]]; then
+if [[ -f "$ENGINE/pull.conf" ]]; then
     ok "pull.conf already there, left alone — currently:"
-    grep -E "^(REMOTE|DESTINATION)=" "$TOOL/pull.conf" | sed 's/^/      /'
-    if ! grep -qE "^DESTINATION=$DATA\$" "$TOOL/pull.conf"; then
-        warn "DESTINATION does not point at $DATA — edit $TOOL/pull.conf"
+    grep -E "^(REMOTE|DESTINATION)=" "$ENGINE/pull.conf" | sed 's/^/      /'
+    if ! grep -qE "^DESTINATION=$DATA\$" "$ENGINE/pull.conf"; then
+        warn "DESTINATION does not point at $DATA — edit $ENGINE/pull.conf"
     fi
 else
     sed -e "s|^DESTINATION=.*|DESTINATION=$DATA|" \
-        "$HERE/pull.conf.example" > "$TOOL/pull.conf"
+        "$HERE/pull.conf.example" > "$ENGINE/pull.conf"
     # Take the remote from a pull.conf sitting next to this script, and
     # failing that from the only remote rclone knows about — a drive that
     # ships pointing at "your-bucket" copies nothing and explains nothing.
@@ -208,28 +244,28 @@ else
         fi
     fi
     [[ -n "$REMOTE_LINE" ]] && \
-        sed -i "s|^REMOTE=.*|$REMOTE_LINE|" "$TOOL/pull.conf"
+        sed -i "s|^REMOTE=.*|$REMOTE_LINE|" "$ENGINE/pull.conf"
     # STATUS_REMOTE is a separate line from REMOTE, so setting REMOTE above
     # does not touch it — left at an example value it fails silently at
     # the very end of every pull, after everything real already worked.
-    sed -i "s|^STATUS_REMOTE=.*|STATUS_REMOTE=|" "$TOOL/pull.conf"
+    sed -i "s|^STATUS_REMOTE=.*|STATUS_REMOTE=|" "$ENGINE/pull.conf"
     ok "pull.conf created, pointing at $DATA"
-    grep -E "^(REMOTE|DESTINATION)=" "$TOOL/pull.conf" | sed 's/^/      /'
+    grep -E "^(REMOTE|DESTINATION)=" "$ENGINE/pull.conf" | sed 's/^/      /'
 fi
 
 # Whichever branch got here, a remote nobody has set is the single most
 # likely reason the drive stays empty, so it is checked once at the end.
-if grep -qE "^REMOTE=(backblaze:your-bucket)?$|^REMOTE=$" "$TOOL/pull.conf" \
-   || grep -qE "^REMOTE=[^:]*:$" "$TOOL/pull.conf"; then
+if grep -qE "^REMOTE=(backblaze:your-bucket)?$|^REMOTE=$" "$ENGINE/pull.conf" \
+   || grep -qE "^REMOTE=[^:]*:$" "$ENGINE/pull.conf"; then
     warn "REMOTE is not set to a bucket yet — nothing will copy until it is"
-    echo "        edit $TOOL/pull.conf and set, for example:"
+    echo "        edit $ENGINE/pull.conf and set, for example:"
     echo "          REMOTE=backblaze:honestbackup"
 fi
 
 if [[ -n "${SUDO_USER:-}" ]]; then
     chown -R "$REAL_USER" "$TOOL" \
         "$DRIVE/Menu Mac.command" "$DRIVE/Sync Mac.command" \
-        "$DRIVE/Menu Linux.desktop" "$DRIVE/Sync Linux.desktop" 2>/dev/null \
+        "$DRIVE/Menu Linux.sh" "$DRIVE/Sync Linux.sh" 2>/dev/null \
         && ok "ownership handed to $REAL_USER" \
         || warn "could not change ownership — you may need sudo to run it"
 fi
@@ -243,11 +279,8 @@ echo
 echo "  ${DIM}First time on a new machine, use Menu — it can fetch what is"
 echo "  needed onto the drive, and installs nothing on the machine itself.${OFF}"
 echo
-echo "  Or from a terminal:  $TOOL/copy-now.sh"
+echo "  Or from a terminal:  $ENGINE/copy-now.sh"
 echo
-echo "  ${DIM}To read the backups on the drive rather than only carry them,"
-echo "  the private key has to travel too:${OFF}"
-echo "      $TOOL/get-tools.sh --with-key"
-echo "  ${DIM}That makes a lost drive a readable copy of everything. Only do"
-echo "  it for a drive that stays locked away.${OFF}"
+echo "  ${DIM}The private key never travels on the drive. To read a backup,"
+echo "  Browse asks for it — pasted in, never saved.${OFF}"
 echo

@@ -21,8 +21,8 @@ sign-in logs for 30, and compliance frameworks tend to ask for years.
 | **Cloudflare** | Zones, DNS, WAF and firewall rules, Zero Trust config, account audit log |
 | **Notion** | Full workspace export, database schemas and rows |
 
-Roughly 115 datasets. What is and isn't collected - and why - is written up in
-[BACKUP_COVERAGE.md](BACKUP_COVERAGE.md).
+What is and isn't collected - and why - is written up in
+[docs/coverage.md](docs/coverage.md).
 
 ## How it works
 

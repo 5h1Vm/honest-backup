@@ -198,6 +198,24 @@ def enabled() -> bool:
     return str(CFG.get("CRON_ENABLED", "false")).strip().lower() == "true"
 
 
+def describe(line: str) -> str:
+    """A human sentence for one crontab line.
+
+    Prefers the "# HH:MM Zone" comment install() writes on every line it
+    creates — already converted to the zone the person chose, rather than
+    the raw UTC-ish cron expression it compiles down to. Falls back to
+    reading the raw fields, for a crontab line nobody here wrote.
+    """
+    if "#" in line:
+        comment = line.rsplit("#", 1)[1].strip()
+        if comment:
+            return f"at {comment}"
+    fields = line.split()
+    if len(fields) >= 2 and fields[0].isdigit() and fields[1].isdigit():
+        return f"at {int(fields[1]):02d}:{int(fields[0]):02d} on this machine's clock"
+    return "on a schedule that could not be read"
+
+
 @dataclass
 class CronStatus:
     available: bool
@@ -217,7 +235,7 @@ class CronStatus:
             return "automatic backups are off"
         if self.entries > 1:
             return f"automatic backups run at {self.entries} times a day"
-        return f"automatic backups run {describe(self.schedule or '')}"
+        return f"automatic backups run {describe(self.line or '')}"
 
 
 def _read_crontab() -> tuple[bool, list[str]]:

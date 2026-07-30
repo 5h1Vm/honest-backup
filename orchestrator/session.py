@@ -27,7 +27,12 @@ class BackupSession:
     replicated: dict = field(default_factory=dict)
 
     def finish(self):
-        self.finished = datetime.now()
+        from lib.logger import display_zone
+
+        # Matches started's zone, whatever that is — duration is a
+        # subtraction, and mixing an aware and a naive datetime there
+        # raises rather than quietly giving the wrong number.
+        self.finished = datetime.now(self.started.tzinfo or display_zone())
 
     @property
     def duration(self):

@@ -37,6 +37,7 @@ def load_state():
 
 def save_state(state):
     """Save the state dictionary to the state file."""
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=4)
 

@@ -20,6 +20,7 @@ two minutes to complete, so the poll timeout is generous by default.
 """
 
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +28,7 @@ import requests
 
 from . import config
 from .graph import get_token, graph_paginated_get
+from lib.jsonio import merge_records, write_json
 
 
 # The beta endpoint is the one that accepts query submission today; v1.0
@@ -175,12 +177,31 @@ def collect_unified_audit(logger, workspace, hours=24, state=None,
         by_service.setdefault(service, []).append(record)
 
     stamp = end.strftime("%Y-%m-%d")
-    with open(audit_dir / f"unified_audit_{stamp}.json", "w") as f:
-        json.dump(records, f, indent=2)
+
+    # Two files, deliberately.
+    #
+    # The dated one is cumulative: each run merges its window into whatever
+    # the day already had. A run searching forty minutes used to overwrite the
+    # first run's seven-day catch-up with "[]", so every archive after the
+    # first held less history than the one before it. Merging means any
+    # archive from any run carries the day's full known audit trail.
+    #
+    # The per-run one is exactly what this run saw, and nothing else — useful
+    # when the question is "what changed at 13:00", which a merged file can
+    # no longer answer.
+    dated = audit_dir / f"unified_audit_{stamp}.json"
+    combined = merge_records(dated, records, key_fields=("id",))
+    write_json(dated, combined)
+    # The orchestrator publishes the run's id so collectors can name their
+    # own output after it without every signature having to carry it down.
+    run_id = (os.environ.get("HONESTBACKUP_RUN_ID")
+              or end.strftime("%Y-%m-%d_%H-%M-%S"))
+    write_json(audit_dir / f"unified_audit_run_{run_id}.json", records)
 
     for service, entries in by_service.items():
-        with open(audit_dir / f"{service}.json", "w") as f:
-            json.dump(entries, f, indent=2)
+        service_file = audit_dir / f"{service}.json"
+        write_json(service_file,
+                   merge_records(service_file, entries, key_fields=("id",)))
         counts[f"ual_{service}"] = len(entries)
 
     counts["unified_audit_total"] = len(records)

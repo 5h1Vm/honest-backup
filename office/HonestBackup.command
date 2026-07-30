@@ -14,7 +14,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
 BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'
-GREEN=$'\033[32m'; YELLOW=$'\033[33m'; OFF=$'\033[0m'
+GREEN=$'\033[32m'; YELLOW=$'\033[33m'; CYAN=$'\033[36m'; OFF=$'\033[0m'
 
 hold() {
     echo
@@ -22,11 +22,14 @@ hold() {
     read -r _ || true
 }
 
-clear 2>/dev/null
-echo
-echo "  ${BOLD}HonestBackup — office drive${OFF}"
-echo "  ${DIM}$HERE${OFF}"
-echo
+banner() {
+    clear 2>/dev/null
+    echo
+    echo "  ${BOLD}${CYAN}◆ HonestBackup${OFF}"
+    echo "  ${DIM}$HERE${OFF}"
+}
+
+banner
 
 # ---------------------------------------------------------------------------
 # Python is the one thing that has to be on the machine. macOS ships it;
@@ -44,14 +47,14 @@ for candidate in python3 python; do
 done
 
 if [[ -z "$PY" ]]; then
+    echo
     echo "  ${RED}Python 3 is not available on this machine.${OFF}"
     echo
     if [[ "$(uname -s)" == "Darwin" ]]; then
-        echo "  On a Mac, run this once in Terminal and accept the dialogue:"
+        echo "  Run once in Terminal, accept the dialogue:"
         echo "      ${BOLD}xcode-select --install${OFF}"
         echo
-        echo "  ${DIM}It installs Apple's own command line tools, which"
-        echo "  include Python. Nothing else on this drive needs installing.${OFF}"
+        echo "  ${DIM}Installs Apple's own tools, which include Python.${OFF}"
     else
         echo "      ${BOLD}sudo apt install python3${OFF}"
     fi
@@ -79,11 +82,11 @@ for needed in rclone age; do
 done
 
 if [[ -n "$missing" ]]; then
-    echo "  ${YELLOW}This drive is missing:${OFF}$missing"
-    echo "  ${DIM}They can be downloaded onto the drive itself — nothing"
-    echo "  gets installed on this Mac and no password is needed.${OFF}"
     echo
-    read -r -p "  Fetch them now? [Y/n] " reply
+    echo "  ${YELLOW}Missing:${OFF}$missing"
+    echo "  ${DIM}Fetched onto the drive — nothing installed here.${OFF}"
+    echo
+    read -r -p "  Fetch now? [Y/n] " reply
     case "${reply:-y}" in
         [Nn]*) echo "  ${DIM}Left alone.${OFF}"; hold; exit 1 ;;
         *) bash "$HERE/get-tools.sh" || { hold; exit 1; } ;;
@@ -91,31 +94,50 @@ if [[ -n "$missing" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# the private key for this session
+#
+# It never lives on the drive — a lost drive would then be a readable
+# copy of everything. Entering it here holds it only in this Terminal
+# window's own memory, for Browse to reuse without asking again.
+# ---------------------------------------------------------------------------
+enter_key() {
+    echo
+    echo "  ${DIM}Starts with AGE-SECRET-KEY-1. Input is hidden, nothing saved.${OFF}"
+    read -rs -p "  Key: " typed
+    echo
+    if [[ -z "$typed" ]]; then
+        echo "  ${DIM}Nothing entered.${OFF}"
+        return
+    fi
+    export HONESTBACKUP_KEY_TEXT="$typed"
+    unset typed
+    echo "  ${GREEN}Set for this session.${OFF}"
+}
+
+# ---------------------------------------------------------------------------
 # the menu
 # ---------------------------------------------------------------------------
 while true; do
     echo
-    echo "  ${BOLD}What would you like to do?${OFF}"
+    echo "  ${BOLD}1${OFF}) Sync      ${BOLD}2${OFF}) Browse    ${BOLD}3${OFF}) Reports"
+    echo "  ${BOLD}4${OFF}) Status    ${BOLD}5${OFF}) Verify    ${BOLD}6${OFF}) Key"
+    echo "  ${BOLD}q${OFF}) Quit"
     echo
-    echo "    1.  Copy the latest backups down from the cloud"
-    echo "    2.  Look inside the backups already on this drive"
-    echo "    3.  Check the drive without touching the network"
-    echo "    4.  Re-check every archive against its checksum"
-    echo "    q.  Quit"
-    echo
-    read -r -p "  Choose: " choice
+    read -r -p "  ${CYAN}›${OFF} " choice
     echo
     case "$choice" in
         1) "$PY" "$HERE/pull.py"; result=$?
            case $result in
-               0) echo; echo "  ${GREEN}${BOLD}The drive is up to date.${OFF}" ;;
-               2) echo; echo "  ${RED}Finished, but something needs attention above.${OFF}" ;;
-               *) echo; echo "  ${RED}Did not finish. Read the message above.${OFF}" ;;
+               0) echo; echo "  ${GREEN}${BOLD}Up to date.${OFF}" ;;
+               2) echo; echo "  ${RED}Needs attention — see above.${OFF}" ;;
+               *) echo; echo "  ${RED}Did not finish — see above.${OFF}" ;;
            esac ;;
         2) "$PY" "$HERE/view.py" ;;
-        3) "$PY" "$HERE/pull.py" --status ;;
-        4) "$PY" "$HERE/pull.py" --verify-all ;;
-        q|Q|"") echo "  ${DIM}Nothing was changed.${OFF}"; echo; exit 0 ;;
-        *) echo "  ${RED}Pick 1, 2, 3, 4 or q.${OFF}" ;;
+        3) "$PY" "$HERE/view.py" --reports-menu ;;
+        4) "$PY" "$HERE/pull.py" --status ;;
+        5) "$PY" "$HERE/pull.py" --verify-all ;;
+        6) enter_key ;;
+        q|Q|"") echo "  ${DIM}Nothing changed.${OFF}"; echo; exit 0 ;;
+        *) echo "  ${RED}Pick 1–6 or q.${OFF}" ;;
     esac
 done

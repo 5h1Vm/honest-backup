@@ -21,6 +21,7 @@ from pathlib import Path
 from .config import ZONE_ID, ACCOUNT_ID
 from . import config as cf_config
 from .api import get, get_all
+from lib.jsonio import write_json
 
 
 BASE = "https://api.cloudflare.com/client/v4"
@@ -70,9 +71,10 @@ ACCOUNT_DATASETS = {
 
 
 def save_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    # Replaces the file rather than writing through it: in an incremental
+    # workspace this path may still share an inode with yesterday's copy,
+    # and truncating that would rewrite yesterday's snapshot as well.
+    write_json(path, data)
 
 
 def count(data):

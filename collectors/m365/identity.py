@@ -9,6 +9,7 @@ import json
 
 from . import config
 from .graph import graph_paginated_get
+from lib.jsonio import write_json
 
 
 # name -> (root, endpoint, description)
@@ -90,8 +91,7 @@ def collect_identity(headers, logger, workspace):
             warnings.append(message)
             continue
 
-        with open(identity_dir / f"{name}.json", "w") as f:
-            json.dump(data, f, indent=2)
+        write_json(identity_dir / f"{name}.json", data)
 
         counts[name] = len(data)
         logger.success(f"Collected {len(data)}")

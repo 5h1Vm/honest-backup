@@ -25,6 +25,7 @@ import requests
 
 from .graph import get_token, certificate_available
 from .files import _safe_relative
+from lib.jsonio import write_json
 
 
 def _tenant_hosts(logger):
@@ -75,6 +76,11 @@ def _rest_get(url, token, timeout=120):
 
 def _download(url, token, destination, timeout=300):
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # See graph_download: today's workspace is hardlinked from yesterday's,
+    # so writing in place would rewrite yesterday's copy through the shared
+    # inode. Only changed files reach here, which is exactly the case where
+    # that would do damage.
+    destination.unlink(missing_ok=True)
     with requests.get(
         url,
         headers={"Authorization": f"Bearer {token}"},
@@ -328,8 +334,7 @@ def collect_sharepoint_rest(logger, workspace, settings):
 
             index_dir = sp_dir / "index" / safe_site
             index_dir.mkdir(parents=True, exist_ok=True)
-            with open(index_dir / f"{safe_lib}.json", "w") as f:
-                json.dump(index, f, indent=2)
+            write_json(index_dir / f"{safe_lib}.json", index)
 
             total_files += stats["downloaded"]
             total_unchanged += stats["unchanged"]
@@ -342,8 +347,7 @@ def collect_sharepoint_rest(logger, workspace, settings):
                 f"{stats['bytes'] / 1048576:.1f} MB fetched)"
             )
 
-    with open(sp_dir / "sites_rest.json", "w") as f:
-        json.dump(inventory, f, indent=2)
+    write_json(sp_dir / "sites_rest.json", inventory)
 
     counts["sharepoint_rest_sites"] = len(inventory)
     counts["sharepoint_rest_files"] = total_files

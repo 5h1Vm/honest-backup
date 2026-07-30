@@ -11,6 +11,7 @@ import json
 from . import config
 from .graph import graph_paginated_get
 from .files import download_drive
+from lib.jsonio import write_json
 
 
 def list_all_sites(headers, logger):
@@ -56,8 +57,7 @@ def collect_sharepoint(headers, logger, workspace, settings):
         logger.warning(message)
         return counts, [message]
 
-    with open(sp_dir / "sites.json", "w") as f:
-        json.dump(sites, f, indent=2)
+    write_json(sp_dir / "sites.json", sites)
     counts["sites"] = len(sites)
 
     if not settings["download_files"]:
@@ -105,8 +105,7 @@ def collect_sharepoint(headers, logger, workspace, settings):
 
             index_dir = sp_dir / "index" / safe_site
             index_dir.mkdir(parents=True, exist_ok=True)
-            with open(index_dir / f"{safe_drive}.json", "w") as f:
-                json.dump(index, f, indent=2)
+            write_json(index_dir / f"{safe_drive}.json", index)
 
             total_files += stats["downloaded"]
             total_bytes += stats["bytes"]

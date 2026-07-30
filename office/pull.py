@@ -81,6 +81,26 @@ def settings(conf: dict) -> dict:
 
     remote = conf.get("REMOTE", "").rstrip("/")
     destination = conf.get("DESTINATION", "")
+    destination_path = Path(os.path.expanduser(destination)) if destination else None
+
+    # DESTINATION is written as an absolute path at install time, which is
+    # only ever correct on the machine that ran the installer. Linux mounts
+    # a drive at /run/media/<user>/<label>; macOS mounts the same physical
+    # drive at /Volumes/<label>. Plug the drive into the other kind of
+    # machine and that path points nowhere.
+    #
+    # HonestBackup/Scripts and HonestBackup/Backups are siblings wherever
+    # the drive is mounted, so when the configured path is not reachable,
+    # fall back to resolving Backups relative to this script's own
+    # location — which is always correct, because the script moved with
+    # the drive too.
+    if destination_path is None or not destination_path.exists():
+        sibling = SCRIPT_DIR.parent / "Backups"
+        if sibling.is_dir():
+            if destination_path is not None:
+                say(f"! {destination_path} is not reachable here — "
+                    f"using {sibling} instead (this drive's own layout)")
+            destination_path = sibling
 
     # Checked here rather than by rclone: "bad suffix 'd'" means nothing to
     # somebody who mistyped a speed limit.
@@ -94,7 +114,7 @@ def settings(conf: dict) -> dict:
 
     return {
         "remote": remote,
-        "destination": Path(os.path.expanduser(destination)) if destination else None,
+        "destination": destination_path,
         "verify": flag("VERIFY", "true"),
         "publish_status": flag("PUBLISH_STATUS", "true"),
         "status_remote": conf.get("STATUS_REMOTE", "").rstrip("/") or (

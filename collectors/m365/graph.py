@@ -147,6 +147,13 @@ def graph_download(url, headers, destination, timeout=300):
 
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    # An incremental workspace is hardlinked from yesterday's, so this path
+    # may still share an inode with the previous run's copy. Opening it "wb"
+    # would write through that link and silently rewrite yesterday's snapshot
+    # into today's content. Unlinking first breaks the link, so the download
+    # lands in a new file and history stays what it says it is.
+    destination.unlink(missing_ok=True)
+
     with requests.get(url, headers=headers, stream=True, timeout=timeout) as r:
         r.raise_for_status()
         written = 0

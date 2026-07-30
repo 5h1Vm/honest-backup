@@ -14,6 +14,7 @@ import json
 
 from . import config
 from .graph import graph_paginated_get
+from lib.jsonio import write_json
 
 
 def collect_teams(headers, logger, workspace, settings):
@@ -34,8 +35,7 @@ def collect_teams(headers, logger, workspace, settings):
         logger.warning(message)
         return counts, [message]
 
-    with open(teams_dir / "teams.json", "w") as f:
-        json.dump(teams, f, indent=2)
+    write_json(teams_dir / "teams.json", teams)
     counts["teams"] = len(teams)
 
     if not teams:
@@ -66,16 +66,14 @@ def collect_teams(headers, logger, workspace, settings):
         team_dir = teams_dir / safe_team
         team_dir.mkdir(parents=True, exist_ok=True)
 
-        with open(team_dir / "channels.json", "w") as f:
-            json.dump(channels, f, indent=2)
+        write_json(team_dir / "channels.json", channels)
 
         # Team membership is its own access-control record.
         try:
             members = graph_paginated_get(
                 f"{config.GRAPH_ROOT}/teams/{team_id}/members", headers
             )
-            with open(team_dir / "members.json", "w") as f:
-                json.dump(members, f, indent=2)
+            write_json(team_dir / "members.json", members)
         except Exception as e:
             warnings.append(f"team {team_name}: members unavailable: {e}")
 
@@ -118,8 +116,7 @@ def collect_teams(headers, logger, workspace, settings):
                     pass
 
             safe_channel = str(channel_name).replace("/", "_")[:80]
-            with open(team_dir / f"messages_{safe_channel}.json", "w") as f:
-                json.dump(messages, f, indent=2)
+            write_json(team_dir / f"messages_{safe_channel}.json", messages)
 
             total_messages += len(messages)
             logger.success(f"{channel_name}: {len(messages)} messages")
