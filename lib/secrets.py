@@ -78,6 +78,20 @@ def load_env():
     if not kp_pass:
         raise ValueError("KEEPASS_PASSWORD environment variable must be set for KeePass provider")
 
+    # A database that will not open is fatal — nothing can run without its
+    # credentials, and every lookup after this would fail for the same
+    # reason while blaming whichever entry happened to be asked for first.
+    # Checked once, here, so the error names the real problem.
+    probe = subprocess.run(
+        ["keepassxc-cli", "ls", "--quiet", kp_db],
+        input=kp_pass, text=True, capture_output=True,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            f"Could not open the credential database {kp_db}: "
+            f"{probe.stderr.strip() or 'wrong password?'}"
+        )
+
     env = {}
     for var_name in known_secrets:
         # Use keepassxc-cli to get the secret (password field) from the entry
@@ -101,8 +115,17 @@ def load_env():
             )
             secret = result.stdout.strip()
             env[var_name] = secret
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Failed to retrieve secret for {var_name} (entry: {var_name}): {e.stderr}"
-            )
+        except subprocess.CalledProcessError:
+            # An entry that is not there means that credential was never
+            # configured, which is ordinary: an installation backing up only
+            # Microsoft 365 has no Cloudflare token and no Notion token, and
+            # a site with no Telegram has no bot. Treating any one of those
+            # as fatal meant such an installation could not start at all,
+            # and the message named a service nobody had asked for.
+            #
+            # The collectors already report an absent credential as "not
+            # configured" and carry on, so leaving it out of the map is
+            # enough. The database itself was proved openable above, so
+            # this really is a missing entry and not a wider failure.
+            continue
     return env
