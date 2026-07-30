@@ -132,7 +132,7 @@ echo "  ${DIM}$ROOT${OFF}"
 # 1. the machine
 # ---------------------------------------------------------------------------
 step "1. Machine"
-NEEDED=(python3 age age-keygen zstd tar rclone keepassxc-cli)
+NEEDED=(python3 pip3 age age-keygen zstd tar rclone keepassxc-cli crontab)
 MISSING=()
 for tool in "${NEEDED[@]}"; do
     command -v "$tool" >/dev/null 2>&1 && ok "$tool" || { bad "$tool"; MISSING+=("$tool"); }
@@ -348,6 +348,44 @@ GREEN, RED, YELLOW, OFF = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
 def ok(m):   print(f"  {GREEN}✓{OFF} {m}")
 def bad(m):  print(f"  {RED}✗{OFF} {m}")
 def warn(m): print(f"  {YELLOW}!{OFF} {m}")
+
+# The Python packages, before anything that needs them. setup.sh installs
+# these, but only pip's own failure was ever fatal — the browser step merely
+# warned, so an install could finish looking complete with Notion unable to
+# run at all. Checked by importing, because a package that pip says is there
+# and Python cannot import is the case worth catching.
+import importlib
+required = {"textual": "textual", "rich": "rich", "msal": "msal",
+            "requests": "requests", "cryptography": "cryptography",
+            "notion-client": "notion_client", "playwright": "playwright"}
+absent = []
+for name, module in required.items():
+    try:
+        importlib.import_module(module)
+    except Exception:
+        absent.append(name)
+if absent:
+    bad(f"Python packages missing: {', '.join(absent)}")
+    print("     pip3 install --user -r requirements.txt")
+else:
+    ok(f"all {len(required)} Python packages import")
+
+# Notion's export drives a real browser. Without it that collector cannot
+# run, and the failure would otherwise surface at 01:00 rather than now.
+import shutil
+browser = ""
+try:
+    from lib.secrets import get_config
+    browser = get_config().get("NOTION_BROWSER_EXECUTABLE", "")
+except Exception:
+    pass
+if not browser:
+    warn("no NOTION_BROWSER_EXECUTABLE set — Notion's export will not run")
+elif os.access(browser, os.X_OK):
+    ok("Notion's browser is present")
+else:
+    bad(f"Notion's browser is not at {browser}")
+    print("     python3 -m playwright install chromium")
 
 try:
     from lib.secrets import load_env
