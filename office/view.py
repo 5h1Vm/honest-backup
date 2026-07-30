@@ -522,26 +522,96 @@ def default_restore_dir(root: Path, backup_id: str) -> Path:
     return root.parent / "Restored" / backup_id
 
 
+# How many to show at once. A drive that has been running a year holds
+# several hundred backups, and a numbered list of all of them is not a list
+# anyone can use — the number you want is somewhere in the middle of three
+# screens of scrollback. Newest first, a screenful at a time, and typing part
+# of a date narrows it: "07-30" is a far easier thing to know than "item 291".
+PAGE = 12
+
+
+def looks_like_a_key(text: str) -> bool:
+    """Is this someone pasting their private key where it does not belong?"""
+    return text.strip().upper().startswith("AGE-SECRET-KEY-1")
+
+
+def choose_backup(root: Path, found: list[str], allow_reports: bool,
+                  heading: str = "Backups on this drive",
+                  noun: str = "backups", sizes: bool = True) -> str | None:
+    """Pick one id from a list that may be very long. None to go back."""
+    matching = list(found)
+    query = ""
+
+    while True:
+        page = matching[:PAGE]
+        print()
+        title = f"{len(matching)} {noun}" if not query else \
+                f"{len(matching)} matching {query!r}"
+        print(f"  {BOLD}{heading}{OFF}   {DIM}{title}{OFF}")
+        print()
+        if not page:
+            print(f"  {YELLOW}Nothing matches {query!r}.{OFF}")
+        for number, backup_id in enumerate(page, 1):
+            size = ""
+            if sizes:
+                try:
+                    size = f"   {DIM}{human(archive_for(root, backup_id).stat().st_size)}{OFF}"
+                except OSError:
+                    size = ""
+            print(f"    {number:>2}.  {backup_id}{size}")
+        hidden = len(matching) - len(page)
+        if hidden > 0:
+            print(f"        {DIM}… {hidden} older — type part of a date "
+                  f"to narrow, or 'all'{OFF}")
+        print()
+
+        bits = [f"1-{len(page)}" if page else "",
+                "a date to search",
+                "r for reports" if allow_reports else "",
+                "q to quit"]
+        answer = ask("  ".join(b for b in bits if b) + ":")
+        low = answer.lower().strip()
+
+        if low in ("q", "quit", "exit", ""):
+            return None
+        if allow_reports and low == "r":
+            _report_menu(root)
+            continue
+        if low == "all":
+            matching, query = list(found), ""
+            continue
+        # A key pasted here is echoed in plain sight, which is exactly what
+        # the hidden prompt elsewhere exists to avoid. Say so rather than
+        # treating it as a search that quietly matches nothing.
+        if looks_like_a_key(answer):
+            print()
+            print(f"  {RED}That was your private key, typed where it is "
+                  f"visible.{OFF}")
+            print(f"  {DIM}Nothing was saved, but it is now in this window's "
+                  f"scrollback — clear it, and the key is only asked for "
+                  f"after you pick a backup.{OFF}")
+            continue
+        if answer.isdigit() and 1 <= int(answer) <= len(page):
+            return page[int(answer) - 1]
+        # Anything else narrows the list.
+        query = answer.strip()
+        matching = [b for b in found if query.lower() in b.lower()]
+
+
 def _report_menu(root: Path) -> None:
     found = reports(root)
-    print()
     if not found:
+        print()
         print(f"  {YELLOW}No reports on this drive yet.{OFF}")
         print()
         return
-    print(f"  {BOLD}Reports{OFF}   {DIM}no key needed{OFF}")
-    print()
-    for number, backup_id in enumerate(found, 1):
-        print(f"    {number:>2}.  {backup_id}")
-    print()
-    choice = ask(f"Which one? 1-{len(found)}, or Enter to go back:")
-    if not choice:
-        return
-    if not choice.isdigit() or not 1 <= int(choice) <= len(found):
-        print(f"  {RED}Pick a number from the list.{OFF}")
+    chosen = choose_backup(root, found, allow_reports=False,
+                           heading="Reports   (no key needed)",
+                           noun="reports", sizes=False)
+    if chosen is None:
         return
     print()
-    print(read_report(root, found[int(choice) - 1]))
+    print(read_report(root, chosen))
 
 
 def _restore_prompt(root: Path, backup_id: str) -> None:
@@ -570,36 +640,33 @@ def reports_menu(root: Path) -> int:
         print()
         return 1
     while True:
-        _report_menu(root)
-        again = ask("Read another? Enter for yes, q to go back:")
-        if again.lower() in ("q", "quit", "exit"):
+        chosen = choose_backup(root, reports(root), allow_reports=False,
+                               heading="Reports   (no key needed)",
+                               noun="reports", sizes=False)
+        # Quitting the picker means quitting — asking "read another?" after
+        # someone has just said q made leaving take two answers.
+        if chosen is None:
             return 0
+        print()
+        print(read_report(root, chosen))
+        print()
 
 
 def menu(root: Path) -> int:
     while True:
-        found = backups(root)
-        print()
-        print(f"  {BOLD}Backups on this drive{OFF}   {DIM}{root}{OFF}")
-        print()
+        # Newest first: the backup someone wants is nearly always the last
+        # one taken, and it was previously at the bottom of the list.
+        found = sorted(backups(root), reverse=True)
         if not found:
-            print(f"  {YELLOW}Nothing here yet.{OFF} Run copy-now first.")
+            print()
+            print(f"  {YELLOW}Nothing on this drive yet.{OFF}")
+            print(f"  {DIM}Choose Sync from the menu to bring the backups "
+                  f"down.{OFF}")
             print()
             return 1
-        for number, backup_id in enumerate(found, 1):
-            size = archive_for(root, backup_id).stat().st_size
-            print(f"    {number:>2}.  {backup_id}   {DIM}{human(size)}{OFF}")
-        print()
-        choice = ask(f"Which one? 1-{len(found)}, r for reports, or q to quit:")
-        if choice.lower() in ("q", "quit", "exit", ""):
+        backup_id = choose_backup(root, found, allow_reports=True)
+        if backup_id is None:
             return 0
-        if choice.lower() == "r":
-            _report_menu(root)
-            continue
-        if not choice.isdigit() or not 1 <= int(choice) <= len(found):
-            print(f"  {RED}Pick a number from the list.{OFF}")
-            continue
-        backup_id = found[int(choice) - 1]
 
         print(f"  {DIM}Reading it, this takes a moment…{OFF}")
         entries = tree(root, backup_id)

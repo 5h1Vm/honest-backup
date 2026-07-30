@@ -521,6 +521,19 @@ def run(args) -> int:
     # ------------------------------------------------------------------
     # summary
     # ------------------------------------------------------------------
+    # An empty drive reported "0 backups" and then "complete and verified",
+    # which is true of nothing and reads as reassurance. Say plainly that
+    # there is nothing here and what to press to change that.
+    if not after:
+        say("  Nothing on this drive yet.")
+        say()
+        if args.status:
+            say("  Choose Sync from the menu to bring the backups down.")
+        else:
+            say("  The cloud copy had nothing to send, or could not be read.")
+        say()
+        return 0
+
     say(f"  Held on this drive:  {len(after)} backups, {human(total_bytes)}")
     if ids:
         say(f"  Oldest:              {ids[0]}")
