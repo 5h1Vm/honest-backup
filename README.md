@@ -36,7 +36,14 @@ and can be re-verified at any time.
 
 Backups are incremental. The first run downloads everything; later runs fetch
 only what changed, using API delta tokens where the provider offers them and
-file size comparison where it doesn't.
+file size comparison where it doesn't. A run that finds nothing new fetches
+close to nothing - in practice around 1 MB against 80 MB for a first run.
+
+Each archive is still a *complete* snapshot, not a chain of deltas. What
+incremental saves is the download and the disk, not the archive: today's
+workspace is hardlinked from yesterday's, so unchanged files cost no space,
+and any archive can be restored on its own without needing the ones before
+it. There is no chain to break.
 
 ---
 
@@ -47,18 +54,38 @@ file size comparison where it doesn't.
 ```bash
 git clone https://github.com/5h1Vm/honest-backup.git
 cd honest-backup
-./setup.sh
+./first-run.sh
 ```
 
-Then open the terminal interface and pick **First-time setup**:
+`first-run.sh` takes a bare server to a working installation: it installs
+what is missing, generates this installation's own encryption key, creates
+its credential database, points it at its bucket, writes the configuration -
+and then proves each piece answers before saying it is done.
+
+```bash
+./first-run.sh --answers-file > answers.txt   # fill this in beforehand
+./first-run.sh --answers answers.txt          # then run unattended
+./first-run.sh --check                        # test an install, change nothing
+```
+
+After that, everything is done from the terminal interface:
 
 ```bash
 python3 -m orchestrator.run --tui
 ```
 
-It walks through the credentials, storage and schedule. Nothing needs editing
-by hand, though `config/backup.conf.example` documents every setting if you'd
-rather.
+The interface and `first-run.sh` are the same installation and write the same
+files, so whatever one does the other sees. The difference is only that the
+interface edits an installation that exists, while `first-run.sh` is what
+creates one - on a fresh server there is no credential database for the
+interface to open, and it has no way to make one.
+
+Nothing needs editing by hand, though `config/backup.conf.example` documents
+every setting if you'd rather.
+
+**Every installation is self-contained.** Its own key, credentials, bucket and
+schedule. Nothing is shared between installations, which is what makes it safe
+to hand one to somebody and walk away.
 
 ### Credentials
 
@@ -120,6 +147,31 @@ Decrypted archives can be browsed in place - JSON is pretty-printed, and ZIPs
 
 ---
 
+### Reports
+
+Every run writes a report - what was collected, what wasn't, and why - and
+sends it by email and Telegram. A copy is also kept in the repository under
+`reports/`, which syncs to Backblaze and the external drive like everything
+else.
+
+Reports are deliberately **not encrypted**. A report is a summary of what ran,
+never the tenant's data, so reading one needs no key:
+
+```bash
+python3 office/view.py --reports              # what reports are here
+python3 office/view.py --report <backup-id>   # read one
+```
+
+That is the whole point of keeping them: somebody can confirm last night's
+backup ran, and see what a licence stopped it collecting, without being
+trusted with the key that opens the archives.
+
+The headline only escalates for something that needs a person. A licence the
+tenant does not own, and a provider that was down for ten minutes, are both
+listed under the run - not put in front of it. A label that fires on the
+ordinary run is one people learn to ignore, and then it cannot warn them about
+the run that matters.
+
 ## Knowing the backups are actually there
 
 A file listing only tells you what *is* in your bucket. It can't tell you what
@@ -151,16 +203,42 @@ keeps a copy on an external drive. It pulls from B2, verifies every archive
 against its hash, and never deletes anything. `reseed.py` goes the other way 
 refilling a lost or migrated bucket from the drive.
 
-It holds no API keys and no encryption key, so a stolen drive is not a breach.
+**The encryption key never travels on the drive.** Reading a backup there asks
+for it each time, hidden, and holds it only in that terminal's memory. So a
+lost drive is not a copy of the data.
+
+It is not, however, a folder of no consequence. Whether it carries the storage
+credentials is a choice made at install time:
+
+```bash
+./office/install-to-drive.sh /media/…/Drive --no-credentials         # safest
+./office/install-to-drive.sh /media/…/Drive --plaintext-credentials  # portable
+```
+
+Without them the drive only works on a machine that already has the remote
+configured. With them it works anywhere, and whoever finds it can reach the
+bucket - so scope that key to the one bucket, read-only. A key that can delete
+every bucket in the account turns a mislaid drive into a much larger problem
+than a mislaid drive.
+
+Reports are the exception to all of this: they are stored unencrypted, because
+a report says what ran and what did not, never the tenant's data. Anyone can
+read them from the drive with no key at all, which is the point - checking that
+last night's backup ran should not require being trusted to decrypt it.
 
 ---
 
 ## Notes
 
 **Retention is per destination.** Local is short, cloud is long, the drive is
-forever. Nothing should ever be down to one copy - at these volumes cloud
-storage costs about a dollar a month per decade of history, so expiring the
-cloud copy rarely pays for the risk.
+forever. Nothing should ever be down to one copy.
+
+Every archive is a full snapshot, so the cloud grows by its full size on every
+run whatever the incremental saved on the download. At two runs a day that is
+roughly 55 GB and about $0.33 a month per year of history - cheap enough that
+expiring the cloud copy rarely pays for the risk. The reason to expire it is
+usually not the bill but **Verify**, which re-hashes every archive it holds and
+gets slow long before the cost matters.
 
 **The encryption key is the whole thing.** Lose it and the archives are noise.
 Rotating it is supported and keeps the old key for old archives, but keep a

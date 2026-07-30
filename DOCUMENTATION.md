@@ -237,10 +237,33 @@ Storing a full copy of the workspace for each day quickly consumes storage, espe
 ### Approach
 - **Hardlink‑based incremental backup**, similar to Apple’s Time Machine or `rsync --link-dest`.
 - When `INCREMENTAL=true` (or `--incremental` flag), the orchestrator:
-  1. Looks for the most recent `YYYY-MM-DD` directory under `WORKSPACE`.
-  2. If found, creates the new day’s directory by **hardlinking** every file from the previous day (`cp -al <prev>/* <new>/` or via `rsync -a --link-dest=<prev>/ <new>/`).
-  3. Any file that the collector modifies or creates will **break the link** (a new inode is allocated), storing only the delta.
+  1. Looks for the most recent `YYYY-MM-DD` directory under `WORKSPACE`, **excluding today's**. Today's is created immediately afterwards; asking first is not a style choice. Created first, it is the newest dated directory there is, so the run hardlinks from itself, inherits nothing, and re-downloads everything while reporting that it ran incrementally.
+  2. If found, creates the new day’s directory by **hardlinking** every file from the previous day (`cp -al <prev>/. <new>/`, falling back to `rsync --link-dest`).
+  3. Collectors compare each remote file against the inherited copy and fetch only what differs.
   4. Unchanged files continue to share the same inode, consuming no extra space.
+
+### The part that is not automatic
+
+> A hardlinked file is not a copy. It is the *same file* under a second name.
+
+Writing to one writes to both. `open(path, "w")` opens the shared inode and truncates it, so saving today's data rewrites yesterday's snapshot to match — silently, with no error and nothing in the log.
+
+This is the opposite of what a naive reading suggests, and it is worth stating plainly because the failure is quiet and the damage is real. It cost a 51 MB seven-day audit history, replaced by `[]` in **both** days at once, when a run with forty minutes to report wrote its empty result over the shared file.
+
+Two rules follow, and both are enforced in code:
+
+- **Downloads unlink before writing.** `graph_download` and the SharePoint REST `_download` call `destination.unlink(missing_ok=True)` first, so the new content lands in a new inode.
+- **Collector output is written through `lib/jsonio.write_json`**, which writes a temporary file and `os.replace()`s it into position. The rename puts a fresh inode at the path and leaves the old one untouched. It is also atomic, so a crash mid-write can no longer leave a half-written JSON file where a complete one used to be.
+
+Anything that writes into the workspace must do one or the other. A plain `open(..., "w")` on a path that may be inherited is a latent corruption of the previous run.
+
+### Time-windowed collectors must merge, not replace
+
+A collector that asks "what happened since the checkpoint" only ever reports its own window. Written straight out, that *replaces* the file — so an archive taken after a quiet ten minutes holds ten minutes of audit history in place of the days already collected, and each archive holds less than the one before it.
+
+`lib/jsonio.merge_records` combines the inherited file with the new window, deduplicating on record id, so the dated file stays cumulative. Alongside it each run writes `<name>_run_<backup-id>.json` containing that run alone, because a merged file can no longer answer "what changed at 13:00".
+
+This applies to `collectors/m365/unified_audit.py` and `collectors/m365/audit.py`. Cloudflare's collector already worked this way — its `audit_logs.json` is the cumulative archive and `audit_logs_<date>.json` is the per-run slice.
 
 ### Requirements
 - Filesystem must support hardlinks (ext4, XFS, Btrfs, APFS). Network filesystems like NFS v4 may support them but require proper mounting.
@@ -255,6 +278,20 @@ Storing a full copy of the workspace for each day quickly consumes storage, espe
 ### Limitations
 - If a file is modified, the **entire file** is stored anew (no block‑level deduplication).
 - Not suitable for workloads with massive numbers of tiny files that change frequently (inode exhaustion). In such cases, a true deduplication backend (e.g., ZFS, btrfs send/receive) would be preferable, but that adds operational complexity.
+- **The saving is on the download and the workspace, not the archive.** Each archive tars the whole day's workspace, so it is a full snapshot at full size however little was fetched. That is deliberate — any archive restores on its own, with no chain of deltas to reconstruct and nothing to break if an earlier one is lost — but it does mean cloud storage grows by the full archive size every run.
+- Change detection compares **size**, not content. A file edited without changing length is not re-fetched. Providers that expose a delta token or modification time are asked for that instead; size comparison is the fallback for those that do not.
+- Only the *first* run of a day inherits. A second run on the same day already holds today's fresher copy, and laying yesterday's over it would undo the morning's work. A workspace holding nothing but a crashed run's `logs/` still counts as empty for this purpose.
+
+### Verifying it is actually working
+
+The collector logs say so directly, and this is the quickest way to tell a working incremental from a broken one:
+
+```
+first run   Documents: 1150 files (1150 new or changed, 0 unchanged, 81.5 MB fetched)
+next day    Documents: 1169 files (29 new or changed, 1140 unchanged, 0.9 MB fetched)
+```
+
+`0 unchanged` on a second run means nothing was inherited. The workspaces should also share inodes — `stat -c%i` on the same file in two consecutive day directories returns the same number when it worked.
 
 ### Usage
 - Enable in `backup.conf`: `INCREMENTAL=true`

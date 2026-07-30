@@ -81,6 +81,28 @@ python.org with "Add Python to PATH" ticked.)
 
 ## Running it
 
+Most people never type any of this. A drive prepared by `install-to-drive.sh`
+has four launchers at its top level — **Sync** and **Menu**, one pair each for
+macOS and Linux. Sync is the fast one: bring the backups down and quit. Menu
+opens everything else:
+
+```
+  1) Sync      2) Browse    3) Reports
+  4) Status    5) Verify    6) Key
+  q) Quit
+```
+
+| | |
+|---|---|
+| **Sync** | copy down what is new, verify it |
+| **Browse** | look inside a backup, restore from it — asks for the key |
+| **Reports** | read what each run collected — no key needed |
+| **Status** | what the drive holds, without touching the network |
+| **Verify** | re-checksum every archive already here |
+| **Key** | supply the private key once, for this terminal session |
+
+The commands underneath, for anyone who prefers them:
+
 | Command | What it does |
 |---|---|
 | `./copy-now.sh` | The double-click one: friendly, waits at the end |
@@ -199,13 +221,62 @@ The archives on the drive are the same encrypted files the server holds:
 <id>.tar.zst.age   →   age -d   →   zstd -d   →   tar -x
 ```
 
-They can only be opened with the **age private key**, which lives in the
-server's credential store and is not on this laptop. That is deliberate: a
-stolen drive is not a data breach.
+They can only be opened with the **age private key**, which is never written
+to the drive and never stored on the laptop. That is deliberate: a lost drive
+is not a copy of the data.
 
-To restore, use the server's terminal interface, which does the whole
-sequence. If the server itself is gone, restoring means installing `age`,
-`zstd` and `tar`, and supplying the key from wherever it is held offline.
+Whether the drive carries the *storage* credentials is a separate choice, made
+when it is installed. `--no-credentials` keeps them on the laptop, so the drive
+syncs only on a machine that already has the remote. `--plaintext-credentials`
+puts them on the drive so it works anywhere, and whoever finds it can read the
+bucket — scope that key to the one bucket, read-only, if you take that route.
+
+The drive does the whole sequence itself, and asks for the key when it needs
+one — typed in hidden, held only in that terminal's memory, never written to
+the drive:
+
+```bash
+python3 view.py --list                      # what is here
+python3 view.py --tree <id>                 # what is inside one
+python3 view.py --restore <id> --to <dir>   # everything, to real files
+python3 view.py --restore <id> --to <dir> --files a/b.docx c/d.xlsx
+```
+
+Or choose **Browse** from the menu, which walks the same path. Nothing needs
+the server to be reachable — the drive carries its own `age`, `zstd` and
+`rclone` for macOS and Linux, so a laptop with Python and nothing else can
+restore from it.
+
+Three ways to supply the key, in the order they are tried:
+
+| | |
+|---|---|
+| `HONESTBACKUP_KEY` | a path to a key file kept somewhere else |
+| `HONESTBACKUP_KEY_TEXT` | the key itself — what menu option **6) Key** sets, once per session |
+| typed in | hidden, if this is a real terminal |
+
+However it arrives, it is written to a short-lived file in the system temp
+directory — never the drive — and deleted when the process exits. A key you
+pointed at with `HONESTBACKUP_KEY` is yours and is never touched.
+
+### Reports need no key at all
+
+```bash
+python3 view.py --reports              # which runs have a report
+python3 view.py --report <id>          # read one
+```
+
+Reports are stored unencrypted, because a report says what ran and what did
+not, never the tenant's data. That is the point: confirming last night's
+backup ran should not require being trusted to decrypt it. Menu option
+**3) Reports** is the same thing without the typing.
+
+### Finding one backup among hundreds
+
+The picker shows the newest twelve and narrows as you type — `2026-07` then
+`2026-07-30` gets there in two steps, `m` and `b` walk older and back. The
+number always means "on this screen", so it stays a one- or two-digit answer
+whether the drive holds three backups or seven hundred.
 
 ---
 
