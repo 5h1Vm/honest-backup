@@ -131,17 +131,38 @@ def create_incremental_workspace(workspace_root: Path, today: str) -> Path:
                 check=True,
                 capture_output=True,
             )
-        except subprocess.CalledProcessError as e:
-            # If cp -al not available (e.g., on macOS), fallback to rsync
+        except subprocess.CalledProcessError:
+            # If cp -al is unavailable (macOS), rsync does the same job.
             try:
                 subprocess.run(
                     ["rsync", "-a", "--link-dest", f"{prev}/", f"{prev}/", f"{new_dir}/"],
                     check=True,
                     capture_output=True,
                 )
-            except Exception:
-                # Last resort: copy normally (not incremental)
-                shutil.copytree(prev, new_dir, dirs_exist_ok=True)
+            except Exception as exc:
+                # Both ways of hardlinking failed, which on a normal disk does
+                # not happen — it means the filesystem has no hardlinks at all.
+                # SMB is the one that catches people out: an Azure Files share
+                # mounted for the workspace supports everything else a backup
+                # needs and silently not this.
+                #
+                # Copying instead would "work". Every run would succeed, the
+                # log would still say INCREMENTAL, and every file would be
+                # fetched and stored in full for ever — which is precisely the
+                # failure this whole mechanism exists to prevent, arrived at
+                # from underneath. A backup that quietly stops being
+                # incremental is worse than one that refuses to start, because
+                # nobody finds out.
+                raise RuntimeError(
+                    f"{new_dir} is on a filesystem without hardlinks, so "
+                    f"nothing can be carried forward from {prev.name}.\n"
+                    f"  Incremental backup cannot work here. Either put the "
+                    f"workspace on a filesystem that supports hardlinks "
+                    f"(ext4, XFS, APFS, Azure Files NFS, a managed disk), or "
+                    f"turn INCREMENTAL off and accept full collection every "
+                    f"run.\n"
+                    f"  underlying error: {exc}"
+                ) from exc
     return new_dir
 
 

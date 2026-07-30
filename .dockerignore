@@ -1,0 +1,34 @@
+# Keep the build context small, and keep secrets out of the image.
+#
+# Anything listed here is either a secret that belongs in a mounted volume
+# rather than baked into a layer, or bulk that would be copied in and then
+# immediately shadowed by a volume mount at the same path.
+
+# Secrets — these must arrive at runtime, never in an image layer. An image
+# is copied, pushed to a registry, and pulled by anyone with read access;
+# a key baked into one is a key you can no longer account for.
+.env
+secrets.kdbx
+config/keys/
+config/runtime/
+config/backup.conf
+
+# Data and state — mounted as volumes, so copying them in would be wasted
+# layers hidden a moment later.
+workspace/
+backupvault/
+state/
+logs/
+honestbackup-profile/
+restore/
+
+# Local noise
+.git/
+.gitignore
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+venv/
+*.png
+docs/*.svg

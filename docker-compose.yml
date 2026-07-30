@@ -1,0 +1,50 @@
+# Running the container by hand, and a template for what a scheduled job
+# needs to be given.
+#
+#   docker compose build
+#   docker compose run --rm backup                     one run, then exit
+#   docker compose run --rm backup --force --only m365 just that collector
+#   docker compose run --rm --entrypoint bash backup    a look inside
+#
+# There is no `up` and no restart policy on purpose. This is a job, not a
+# service: it runs, it finishes, it exits. Whatever schedules it — cron,
+# a Container Apps Job, a Kubernetes CronJob — is the thing that decides when.
+
+services:
+  backup:
+    build: .
+    image: honestbackup:latest
+
+    # Notion's export drives a real browser, which is the memory-hungry part.
+    # Under about 2 GB Chromium is killed partway through the export and the
+    # run fails with something that does not mention memory.
+    mem_limit: 2g
+
+    # Chromium wants more shared memory than Docker's 64 MB default. The
+    # launch flags already pass --disable-dev-shm-usage, which works around
+    # it, but giving it the space is better than making it fall back to disk.
+    shm_size: 1g
+
+    environment:
+      # How to open the credential database. The database itself is mounted,
+      # not baked in.
+      KEEPASS_DATABASE: /app/secrets.kdbx
+      KEEPASS_PASSWORD: ${KEEPASS_PASSWORD:?set KEEPASS_PASSWORD in .env or the shell}
+
+    volumes:
+      # Must persist. Losing any of these does not slow the next run down,
+      # it changes what the next run does.
+      - ./workspace:/app/workspace                       # yesterday's copy
+      - ./backupvault:/app/backupvault                   # the archives
+      - ./state:/app/state                               # delta checkpoints
+      - ./honestbackup-profile:/app/honestbackup-profile # Notion's session
+      - ./logs:/app/logs
+
+      # Secrets, read-only. Mounted rather than copied in so they never
+      # become a layer in an image someone can pull.
+      - ./config/keys:/app/config/keys:ro
+      - ./config/backup.conf:/app/config/backup.conf:ro
+      - ./secrets.kdbx:/app/secrets.kdbx:ro
+
+      # rclone's remote definition, for the Backblaze copy.
+      - ${HOME}/.config/rclone:/root/.config/rclone:ro

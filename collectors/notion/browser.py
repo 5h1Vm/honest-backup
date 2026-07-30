@@ -26,11 +26,20 @@ class NotionBrowser:
 
         # Use environment variable if set, otherwise fall back to config
         profile_dir = os.environ.get("NOTION_PROFILE_DIR", CONFIG_PROFILE_DIR)
+        # An empty NOTION_BROWSER_EXECUTABLE means "whichever Chromium
+        # Playwright brought with it". On a VM the config names a specific
+        # binary because the machine has several; in a container Playwright's
+        # own is the only one there, and its path carries a version number
+        # that changes when the image is rebuilt. Naming it would be a
+        # setting that breaks on upgrade for no benefit.
+        executable = os.environ.get("NOTION_BROWSER_EXECUTABLE",
+                                    BROWSER_EXECUTABLE) or None
+
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=profile_dir,
             headless=True,
             accept_downloads=True,
-            executable_path=BROWSER_EXECUTABLE,
+            executable_path=executable,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",

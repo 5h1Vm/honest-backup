@@ -228,6 +228,54 @@ last night's backup ran should not require being trusted to decrypt it.
 
 ---
 
+## Running it in a container
+
+```bash
+docker compose build
+docker compose run --rm backup
+```
+
+The image runs one backup and exits, because that is what a scheduled job
+wants - Container Apps Jobs, Kubernetes CronJobs and `docker run` on a timer
+all expect the process to finish. The container is not the scheduler; use the
+platform's, and drop the crontab this project writes for a VM.
+
+Notion's export runs headless Chromium inside the container, which works
+without ceremony - the collector already launches with `--no-sandbox` and
+`--disable-dev-shm-usage`. Give it **2 GB of memory**: below that Chromium is
+killed partway through the export, and the error does not mention memory.
+
+### The one constraint that matters
+
+`workspace/` is hardlinked from the previous run. **Azure Files over SMB does
+not support hardlinks**, and neither do most object-storage gateways. Put the
+workspace on something POSIX - a managed disk, Azure Files over NFS, ext4,
+XFS.
+
+Getting this wrong used to be silent: the run would succeed, the log would
+still say `INCREMENTAL`, and every file would be fetched in full for ever. It
+now refuses to start and says why.
+
+### What has to outlive the container
+
+| | | |
+|---|---|---|
+| `workspace/` | ~400 MB | the previous run's copy; without it nothing is incremental |
+| `backupvault/` | grows | the archives, though B2 is their real home |
+| `state/` | tiny | delta tokens and audit checkpoints |
+| `honestbackup-profile/` | ~400 MB | Notion's **logged-in session** |
+| `config/keys/`, `secrets.kdbx` | tiny | the key and the credentials |
+
+Secrets are mounted, never copied into a layer - an image gets pushed to a
+registry and pulled by anyone with read access, and a key baked into one is a
+key you can no longer account for. In Azure, prefer Key Vault with a managed
+identity over passing `KEEPASS_PASSWORD` as an environment variable.
+
+Notion's session is the fragile part. Everything else is API calls that
+containerise cleanly; Notion is a logged-in browser, so seed the profile
+volume from a machine where you have signed in, and expect to redo that
+whenever the session eventually expires.
+
 ## Notes
 
 **Retention is per destination.** Local is short, cloud is long, the drive is
