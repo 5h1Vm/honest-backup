@@ -544,6 +544,19 @@ def main():
         send_backup_report(day_dir, log_file)
     except Exception as e:
         logger.error(f"Failed to send backup report: {e}")
+
+    # The report only exists now — the sync above ran before it was written,
+    # so every report reached Backblaze and the office drive one run late,
+    # and the newest run's report was never the one on the drive. That is
+    # precisely the report someone checking on this morning's backup wants.
+    # Nothing else has changed since the first sync, and rclone skips what it
+    # already has, so this ships a few kilobytes of Markdown and stops.
+    try:
+        SyncEngine().sync()
+        logger.info("Report synced to the offsite copies")
+    except Exception as e:
+        logger.warning(f"Could not sync the report: {e}")
+
     logger.finish()
 
 
