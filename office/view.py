@@ -552,12 +552,15 @@ def choose_backup(root: Path, found: list[str], allow_reports: bool,
     """Pick one id from a list that may be very long. None to go back."""
     matching = list(found)
     query = ""
+    offset = 0        # how far down the list we have walked
 
     while True:
-        page = matching[:PAGE]
+        page = matching[offset:offset + PAGE]
         print()
         title = f"{len(matching)} {noun}" if not query else \
                 f"{len(matching)} matching {query!r}"
+        if offset:
+            title += f", showing {offset + 1}-{offset + len(page)}"
         print(f"  {BOLD}{heading}{OFF}   {DIM}{title}{OFF}")
         print()
         if not page:
@@ -570,13 +573,18 @@ def choose_backup(root: Path, found: list[str], allow_reports: bool,
                 except OSError:
                     size = ""
             print(f"    {number:>2}.  {backup_id}{size}")
-        hidden = len(matching) - len(page)
-        if hidden > 0:
-            print(f"        {DIM}… {hidden} older — type part of a date "
-                  f"to narrow, or 'all'{OFF}")
+        older = len(matching) - (offset + len(page))
+        if older > 0:
+            print(f"        {DIM}… {older} older{OFF}")
         print()
 
+        # The number always means "on this screen", never "the 291st backup",
+        # so it stays a one- or two-digit answer no matter how many the drive
+        # holds. m walks back through them for anyone who does not know the
+        # date they are looking for.
         bits = [f"1-{len(page)}" if page else "",
+                "m for older" if older > 0 else "",
+                "b to go back" if offset else "",
                 "a date to search",
                 "r for reports" if allow_reports else "",
                 "q to quit"]
@@ -588,8 +596,14 @@ def choose_backup(root: Path, found: list[str], allow_reports: bool,
         if allow_reports and low == "r":
             _report_menu(root)
             continue
+        if low in ("m", "more", "n", "next") and older > 0:
+            offset += PAGE
+            continue
+        if low in ("b", "back", "p", "prev") and offset:
+            offset = max(0, offset - PAGE)
+            continue
         if low == "all":
-            matching, query = list(found), ""
+            matching, query, offset = list(found), "", 0
             continue
         # A key pasted here is echoed in plain sight, which is exactly what
         # the hidden prompt elsewhere exists to avoid. Say so rather than
@@ -604,9 +618,11 @@ def choose_backup(root: Path, found: list[str], allow_reports: bool,
             continue
         if answer.isdigit() and 1 <= int(answer) <= len(page):
             return page[int(answer) - 1]
-        # Anything else narrows the list.
+        # Anything else narrows the list. Back to the top of it, since page
+        # four of the old search says nothing about the new one.
         query = answer.strip()
         matching = [b for b in found if query.lower() in b.lower()]
+        offset = 0
 
 
 def _report_menu(root: Path) -> None:
