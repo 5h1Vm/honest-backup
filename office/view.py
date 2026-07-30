@@ -185,8 +185,20 @@ def key_file() -> Path:
 # ---------------------------------------------------------------------------
 # Where the backups are
 # ---------------------------------------------------------------------------
+def is_repository(candidate: Path) -> bool:
+    """Does this folder hold a backup repository?
+
+    Either archives/ or reports/ is enough. Insisting on archives/ meant a
+    drive carrying reports but no archives — one holding only the compliance
+    copy, or one whose archives have aged out under retention — refused to
+    open its reports at all, with a message about archives that had nothing
+    to do with what was being asked for.
+    """
+    return (candidate / "archives").is_dir() or (candidate / "reports").is_dir()
+
+
 def repository_root() -> Path:
-    """The folder holding archives/, read from pull.conf if there is one."""
+    """The folder holding archives/ or reports/, per pull.conf if there is one."""
     conf = SCRIPT_DIR / "pull.conf"
     if conf.is_file():
         for line in conf.read_text().splitlines():
@@ -196,7 +208,7 @@ def repository_root() -> Path:
             key, _, value = line.partition("=")
             if key.strip() == "DESTINATION":
                 root = Path(value.strip()).expanduser()
-                if (root / "archives").is_dir():
+                if is_repository(root):
                     return root
     # Failing that, look where the drive layout puts it relative to here.
     # This script normally lives in HonestBackup/Scripts, with the data in
@@ -204,12 +216,11 @@ def repository_root() -> Path:
     # The rest are fallbacks for an older or hand-built drive.
     for candidate in (SCRIPT_DIR.parent / "Backups", SCRIPT_DIR / "Backups",
                       SCRIPT_DIR, SCRIPT_DIR.parent, Path.cwd()):
-        if (candidate / "archives").is_dir():
+        if is_repository(candidate):
             return candidate
-    die("No archives folder found.\n"
-        "     Either this drive has not been filled yet — run copy-now — "
-        "or\n"
-        "     DESTINATION in pull.conf does not point at the right place.")
+    die("Nothing on this drive yet.\n"
+        "     Choose Sync from the menu to bring the backups down, or check\n"
+        "     that DESTINATION in pull.conf points at the right place.")
 
 
 def backups(root: Path) -> list[str]:
